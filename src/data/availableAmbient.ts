@@ -1,0 +1,68 @@
+import { AmbientTrack } from '../types';
+
+export const ALL_AVAILABLE_AMBIENT_TRACKS: AmbientTrack[] = [
+  {
+    id: 'ambient-rain',
+    name: 'Gentle Rain',
+    icon: 'CloudRain',
+    type: 'rain',
+    volume: 0.6,
+    active: true,
+  },
+  {
+    id: 'ambient-thunder',
+    name: 'Thunderstorm',
+    icon: 'Zap',
+    type: 'thunder',
+    volume: 0.5,
+    active: false,
+  },
+  {
+    id: 'ambient-fireplace',
+    name: 'Cozy Fireplace',
+    icon: 'Flame',
+    type: 'fireplace',
+    volume: 0.4,
+    active: false,
+  },
+  {
+    id: 'ambient-cafe',
+    name: 'Tokyo Cafe',
+    icon: 'Coffee',
+    type: 'cafe',
+    volume: 0.5,
+    active: false,
+  },
+  {
+    id: 'ambient-forest',
+    name: 'Forest Birds & Wind',
+    icon: 'Trees',
+    type: 'forest',
+    volume: 0.5,
+    active: false,
+  },
+  {
+    id: 'ambient-waves',
+    name: 'Ocean Surf Waves',
+    icon: 'Waves',
+    type: 'waves',
+    volume: 0.5,
+    active: false,
+  },
+  {
+    id: 'ambient-crickets',
+    name: 'Summer Night Crickets',
+    icon: 'Moon',
+    type: 'crickets',
+    volume: 0.4,
+    active: false,
+  },
+  {
+    id: 'ambient-whitenoise',
+    name: 'Analog White Noise',
+    icon: 'Radio',
+    type: 'whitenoise',
+    volume: 0.35,
+    active: false,
+  },
+];

@@ -1,0 +1,6 @@
+{
+  "name": "Focus Workspace",
+  "description": "Community-first focus workspace platform with customizable lofi backgrounds, layered audio, focus timer, sticky notes, templates, and real-time sessions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

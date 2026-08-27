@@ -1,0 +1,176 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User account information and preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "lastLoginAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "WorkspaceConfig": {
+      "title": "Workspace Configuration",
+      "description": "Customized settings and presets for the user's workspace including background, audio, method, layout, and appearance",
+      "type": "object",
+      "properties": {
+        "background": { "type": "object" },
+        "audio": { "type": "object" },
+        "method": { "type": "object" },
+        "layout": { "type": "object" },
+        "appearance": { "type": "object" },
+        "viewMode": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Template": {
+      "title": "Workspace Template",
+      "description": "Public or private reusable focus workspace setup",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "creatorName": { "type": "string" },
+        "creatorPhoto": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "tags": { "type": "array" },
+        "thumbnail": { "type": "string" },
+        "config": { "type": "object" },
+        "tasks": { "type": "array" },
+        "stickyNotes": { "type": "array" },
+        "notepad": { "type": "string" },
+        "isPublic": { "type": "boolean" },
+        "price": { "type": "number" },
+        "downloadCount": { "type": "number" },
+        "likesCount": { "type": "number" },
+        "likedBy": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "creatorId", "name", "config"]
+    },
+    "CustomImageRecord": {
+      "title": "Custom User Image Record",
+      "description": "User uploaded or clipboard added image record preserved in cloud storage",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "type": { "type": "string" },
+        "url": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "source": { "type": "string" },
+        "isCustom": { "type": "boolean" },
+        "isPreservedAfterReset": { "type": "boolean" },
+        "hasResetCustoms": { "type": "boolean" },
+        "addedAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "url"]
+    },
+    "RollbackSnapshot": {
+      "title": "Workspace Rollback Snapshot",
+      "description": "Saved version snapshot taken prior to workspace custom reset for version rollback",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "config": { "type": "object" },
+        "tasks": { "type": "array" },
+        "stickyNotes": { "type": "array" },
+        "notepad": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "config"]
+    }
+  },
+  "firestore": {
+    "collections": {
+      "users": {
+        "entity": "UserProfile",
+        "description": "User profile collection",
+        "access": {
+          "read": "auth.uid == resource.data.uid || auth.uid == userId",
+          "write": "auth.uid == userId"
+        },
+        "subcollections": {
+          "workspace": {
+            "entity": "WorkspaceConfig",
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "imageLibrary": {
+            "entity": "CustomImageRecord",
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "rollbackSnapshot": {
+            "entity": "RollbackSnapshot",
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "templates": {
+            "entity": "Template",
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "tasks": {
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "stickyNotes": {
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "notepad": {
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "focusLogs": {
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          },
+          "streak": {
+            "access": {
+              "read": "auth.uid == userId",
+              "write": "auth.uid == userId"
+            }
+          }
+        }
+      },
+      "templates": {
+        "entity": "Template",
+        "description": "Community marketplace templates for workspace setups",
+        "access": {
+          "read": "true",
+          "create": "auth != null && request.resource.data.creatorId == auth.uid",
+          "update": "auth != null",
+          "delete": "auth != null && resource.data.creatorId == auth.uid"
+        }
+      }
+    }
+  }
+}
