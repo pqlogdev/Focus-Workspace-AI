@@ -33,6 +33,10 @@ import {
   UserPlus,
   Shield,
   Filter,
+  RefreshCw,
+  Zap,
+  CheckCircle2,
+  Radio,
 } from 'lucide-react';
 
 interface TemplateModalProps {
@@ -44,8 +48,22 @@ interface TemplateModalProps {
   currentStickyNotes?: StickyNote[];
   currentNotepad?: string;
   roomParticipants?: Participant[];
-  onApplyTemplate: (config: WorkspaceConfig, tasks?: Task[], stickyNotes?: StickyNote[], notepad?: string) => void;
+  onApplyTemplate: (
+    config: WorkspaceConfig,
+    tasks?: Task[],
+    stickyNotes?: StickyNote[],
+    notepad?: string,
+    appliedTemplate?: Template
+  ) => void;
   onOpenMarketplace: () => void;
+  activeTemplate?: Template | null;
+  isTemplateAutoSync?: boolean;
+  isTemplateSyncing?: boolean;
+  lastTemplateSyncedAt?: Date | null;
+  onSetActiveTemplate?: (template: Template | null, enableAutoSync?: boolean) => void;
+  onToggleTemplateAutoSync?: () => void;
+  onDetachActiveTemplate?: () => void;
+  onSyncActiveTemplateNow?: () => Promise<void>;
 }
 
 export const TemplateModal: React.FC<TemplateModalProps> = ({
@@ -59,6 +77,14 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
   roomParticipants = [],
   onApplyTemplate,
   onOpenMarketplace,
+  activeTemplate,
+  isTemplateAutoSync = true,
+  isTemplateSyncing = false,
+  lastTemplateSyncedAt,
+  onSetActiveTemplate,
+  onToggleTemplateAutoSync,
+  onDetachActiveTemplate,
+  onSyncActiveTemplateNow,
 }) => {
   const [activeTab, setActiveTab] = useState<'my-templates' | 'save-new' | 'export-import'>('my-templates');
   const [personalTemplates, setPersonalTemplates] = useState<Template[]>([]);
@@ -78,6 +104,7 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
   const [includeTasks, setIncludeTasks] = useState(true);
   const [includeStickyNotes, setIncludeStickyNotes] = useState(true);
   const [includeNotepad, setIncludeNotepad] = useState(true);
+  const [autoSyncThisTemplate, setAutoSyncThisTemplate] = useState(true);
   const [publishDirectlyToMarketplace, setPublishDirectlyToMarketplace] = useState(false);
 
   // Group Ownership State (isGroup: 0 = personal, isGroup: 1 = group with max 5 members)
@@ -113,15 +140,14 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
   }, [user]);
 
   useEffect(() => {
-    if (!isOpen || !user) return;
+    if (!isOpen) return;
     loadUserTemplates();
   }, [isOpen, user]);
 
   const loadUserTemplates = async () => {
-    if (!user) return;
     setIsLoading(true);
     try {
-      const templates = await loadPersonalTemplates(user.uid, user.email);
+      const templates = await loadPersonalTemplates(user?.uid || 'guest', user?.email);
       setPersonalTemplates(templates);
     } catch (err) {
       console.warn('Error loading personal/group templates:', err);
@@ -200,7 +226,7 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
     if (!templateName.trim()) return;
 
     const templateId = `template-${Date.now()}`;
-    const creatorId = user?.uid || 'anonymous';
+    const creatorId = user?.uid || 'guest';
     const creatorName = user?.displayName || 'Focus Explorer';
 
     // Prepare members user list (stored directly in template table, max 5 members)
@@ -248,41 +274,75 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
 
     setIsLoading(true);
     try {
-      if (user) {
-        await savePersonalTemplate(user.uid, newTemplate);
-        if (publishDirectlyToMarketplace) {
-          await publishTemplateToMarketplace(newTemplate);
-        }
-        await loadUserTemplates();
+      const saved = await savePersonalTemplate(user?.uid || 'guest', newTemplate);
+      if (publishDirectlyToMarketplace && user) {
+        await publishTemplateToMarketplace(saved);
       }
+      if (autoSyncThisTemplate && onSetActiveTemplate) {
+        onSetActiveTemplate(saved, true);
+      }
+      await loadUserTemplates();
 
       setStatusMessage(
-        isGroupFlag === 1
-          ? `Group Template saved! Belonged to ${finalMembers.length}/5 team members.`
-          : 'Personal Template saved to your Cloud workspace!'
+        autoSyncThisTemplate
+          ? `✨ Template "${saved.name}" saved & linked! Any future workspace changes will auto-sync to this template.`
+          : `Template "${saved.name}" saved successfully!`
       );
       setTemplateName('');
       setDescription('');
       setTimeout(() => {
         setStatusMessage(null);
         setActiveTab('my-templates');
-      }, 1500);
+      }, 1800);
     } catch (err) {
       console.error('Failed to save template:', err);
-      setStatusMessage('Error saving template. Please try again.');
+      setStatusMessage('Error saving template. Please check the console logs.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleDeleteTemplate = async (templateId: string) => {
-    if (!user) return;
     if (!confirm('Are you sure you want to delete this saved template?')) return;
     try {
-      await deletePersonalTemplate(user.uid, templateId);
+      await deletePersonalTemplate(user?.uid || 'guest', templateId);
+      if (activeTemplate?.id === templateId && onDetachActiveTemplate) {
+        onDetachActiveTemplate();
+      }
       setPersonalTemplates((prev) => prev.filter((t) => t.id !== templateId));
     } catch (err) {
       console.error('Failed to delete template:', err);
+    }
+  };
+
+  // Quick update an existing template with current workspace settings
+  const handleQuickUpdateTemplateWithWorkspace = async (template: Template) => {
+    try {
+      setIsLoading(true);
+      const updatedTmpl: Template = {
+        ...template,
+        config: currentConfig,
+        tasks: template.tasks !== undefined ? currentTasks : undefined,
+        stickyNotes: template.stickyNotes !== undefined ? currentStickyNotes : undefined,
+        notepad: template.notepad !== undefined ? currentNotepad : undefined,
+        thumbnail:
+          currentConfig.background.workItems?.[0]?.thumbnailUrl ||
+          currentConfig.background.workItems?.[0]?.url ||
+          template.thumbnail,
+        updatedAt: new Date().toISOString(),
+      };
+      const saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+      if (activeTemplate?.id === template.id && onSetActiveTemplate) {
+        onSetActiveTemplate(saved, true);
+      }
+      await loadUserTemplates();
+      setStatusMessage(`✨ Updated template "${saved.name}" with current workspace!`);
+      setTimeout(() => setStatusMessage(null), 2000);
+    } catch (err) {
+      console.error('Error updating template:', err);
+      alert('Failed to update template.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -322,9 +382,12 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
     }
   };
 
-  const handleApply = (template: Template) => {
-    onApplyTemplate(template.config, template.tasks, template.stickyNotes, template.notepad);
-    setStatusMessage(`Activated template: "${template.name}"!`);
+  const handleApply = (template: Template, setAsActive: boolean = true) => {
+    onApplyTemplate(template.config, template.tasks, template.stickyNotes, template.notepad, template);
+    if (setAsActive && onSetActiveTemplate) {
+      onSetActiveTemplate(template, true);
+    }
+    setStatusMessage(`Activated template "${template.name}"! Auto-sync is active.`);
     setTimeout(() => {
       setStatusMessage(null);
       onClose();
@@ -453,6 +516,85 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
         {activeTab === 'my-templates' && (
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 custom-scrollbar">
             
+            {/* Active Template Live Sync Banner */}
+            {activeTemplate && (
+              <div className="p-3.5 bg-gradient-to-r from-indigo-950/60 via-slate-900 to-indigo-950/60 border border-indigo-500/40 rounded-2xl flex items-center justify-between gap-3 shadow-lg animate-in fade-in">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 shrink-0">
+                    <Radio className="w-4 h-4 animate-pulse" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-indigo-300 uppercase tracking-wider">Active Linked Template:</span>
+                      <span className="font-bold text-white text-xs truncate">{activeTemplate.name}</span>
+                      {activeTemplate.isGroup === 1 && (
+                        <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-semibold">
+                          Group
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
+                      <span className="flex items-center gap-1">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            !isTemplateAutoSync
+                              ? 'bg-slate-500'
+                              : isTemplateSyncing
+                              ? 'bg-amber-400 animate-ping'
+                              : 'bg-emerald-400'
+                          }`}
+                        />
+                        <span>
+                          {!isTemplateAutoSync
+                            ? 'Auto-sync paused'
+                            : isTemplateSyncing
+                            ? 'Syncing changes...'
+                            : 'Auto-sync active (any changes saved here)'}
+                        </span>
+                      </span>
+                      {lastTemplateSyncedAt && (
+                        <span className="text-slate-500">
+                          • Last synced: {new Date(lastTemplateSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={onToggleTemplateAutoSync}
+                    className={`px-2.5 py-1 rounded-xl text-xs font-semibold border transition ${
+                      isTemplateAutoSync
+                        ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title={isTemplateAutoSync ? 'Pause Auto-Sync' : 'Resume Auto-Sync'}
+                  >
+                    {isTemplateAutoSync ? 'Sync ON' : 'Sync Paused'}
+                  </button>
+
+                  <button
+                    onClick={onSyncActiveTemplateNow}
+                    disabled={isTemplateSyncing}
+                    className="p-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-indigo-200 rounded-xl text-xs font-semibold transition disabled:opacity-50 flex items-center gap-1"
+                    title="Sync current workspace to template now"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isTemplateSyncing ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline text-[11px]">Sync Now</span>
+                  </button>
+
+                  <button
+                    onClick={onDetachActiveTemplate}
+                    className="p-1.5 text-slate-400 hover:text-rose-300 hover:bg-slate-800/80 rounded-xl transition"
+                    title="Detach active template (keep current workspace)"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Filter Pills and Market Link */}
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800">
@@ -519,11 +661,16 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
                 {filteredTemplates.map((t) => {
                   const isGroupTmpl = t.isGroup === 1;
                   const memberCount = t.members?.length || 1;
+                  const isActive = activeTemplate?.id === t.id;
 
                   return (
                     <div
                       key={t.id}
-                      className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition group"
+                      className={`bg-slate-950/70 border rounded-2xl p-3.5 flex flex-col justify-between transition group relative ${
+                        isActive
+                          ? 'border-indigo-500/80 shadow-[0_0_20px_rgba(99,102,241,0.2)] ring-1 ring-indigo-500/50'
+                          : 'border-slate-800 hover:border-slate-700'
+                      }`}
                     >
                       <div>
                         <div className="relative h-24 rounded-xl overflow-hidden mb-2.5 border border-slate-800">
@@ -536,8 +683,13 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
                             {t.config.method?.type.toUpperCase()}
                           </div>
 
-                          {/* Group / Personal Badge */}
-                          <div className="absolute top-2 left-2 flex items-center gap-1">
+                          {/* Badges */}
+                          <div className="absolute top-2 left-2 flex items-center gap-1 flex-wrap">
+                            {isActive && (
+                              <span className="bg-indigo-600 text-white px-2 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 shadow-md animate-pulse">
+                                <Radio className="w-2.5 h-2.5" /> ACTIVE SYNC
+                              </span>
+                            )}
                             {isGroupTmpl ? (
                               <span className="bg-emerald-600/90 backdrop-blur-md px-2 py-0.5 rounded text-[9px] text-white font-bold flex items-center gap-1 shadow-sm">
                                 <Users className="w-2.5 h-2.5" /> Group ({memberCount}/5)
@@ -561,7 +713,7 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
                             <div className="flex items-center -space-x-1.5 overflow-hidden">
                               {t.members.slice(0, 5).map((m, idx) => (
                                 <div
-                                  key={m.uid || idx}
+                                   key={m.uid || idx}
                                   title={`${m.displayName || m.email || 'Member'} (${m.role || 'member'})`}
                                   className="w-5 h-5 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 border border-slate-950 flex items-center justify-center text-[8px] font-bold text-white"
                                 >
@@ -602,7 +754,7 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between border-t border-slate-800/80 pt-2.5 mt-1">
+                      <div className="flex items-center justify-between border-t border-slate-800/80 pt-2.5 mt-1 gap-1.5">
                         <button
                           onClick={() => handleDeleteTemplate(t.id)}
                           className="p-1.5 text-slate-500 hover:text-rose-400 rounded-lg hover:bg-slate-900 transition"
@@ -611,12 +763,28 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
 
-                        <button
-                          onClick={() => handleApply(t)}
-                          className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-1 shadow-md"
-                        >
-                          <Download className="w-3 h-3" /> Apply Setup
-                        </button>
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          <button
+                            onClick={() => handleQuickUpdateTemplateWithWorkspace(t)}
+                            className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-[11px] font-medium transition flex items-center gap-1"
+                            title="Save current workspace changes directly into this template"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Save Changes</span>
+                          </button>
+
+                          <button
+                            onClick={() => handleApply(t, true)}
+                            className={`px-3 py-1.5 rounded-xl text-white text-xs font-bold transition flex items-center gap-1 shadow-md ${
+                              isActive
+                                ? 'bg-emerald-600 hover:bg-emerald-500'
+                                : 'bg-indigo-600 hover:bg-indigo-500'
+                            }`}
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>{isActive ? 'Re-Apply' : 'Apply & Sync'}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -869,6 +1037,27 @@ export const TemplateModal: React.FC<TemplateModalProps> = ({
                   />
                   <span>Notepad Text</span>
                 </label>
+              </div>
+            </div>
+
+            {/* Auto-Sync Future Changes Toggle */}
+            <div className="p-3.5 bg-indigo-950/40 border border-indigo-500/30 rounded-2xl flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Auto-Sync Workspace Changes to this Template</span>
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Keep this template automatically updated in the cloud as you change timer, backgrounds, audio, tasks, or notes.
+                </p>
+              </div>
+              <div
+                onClick={() => setAutoSyncThisTemplate(!autoSyncThisTemplate)}
+                className={`w-11 h-6 rounded-full transition flex items-center px-0.5 cursor-pointer ${
+                  autoSyncThisTemplate ? 'bg-indigo-600 justify-end' : 'bg-slate-800 justify-start'
+                }`}
+              >
+                <div className="w-5 h-5 rounded-full bg-white shadow-md" />
               </div>
             </div>
 

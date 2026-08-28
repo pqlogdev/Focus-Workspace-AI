@@ -26,6 +26,7 @@ import {
   GripHorizontal,
   Move,
   RotateCcw,
+  Search,
 } from 'lucide-react';
 import { ViewMode } from '../types';
 
@@ -37,6 +38,8 @@ interface FloatingWorkspaceBadgeProps {
   currentStreak: number;
   viewMode: ViewMode;
   pendingTasksCount: number;
+  searchBarElement?: React.ReactNode;
+  onOpenSearch?: () => void;
   onSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onSyncNow: () => Promise<void>;
@@ -61,6 +64,8 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
   currentStreak,
   viewMode,
   pendingTasksCount,
+  searchBarElement,
+  onOpenSearch,
   onSignIn,
   onSignOut,
   onSyncNow,
@@ -365,31 +370,14 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
           
           {/* Header Drag Handle Pill */}
           <div
-            className="p-1 px-1.5 rounded-xl bg-slate-950/60 hover:bg-slate-900/80 border border-slate-800/60 backdrop-blur-xl text-slate-400 hover:text-slate-200 transition shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing group"
+            className="p-1 px-1.5 rounded-xl bg-slate-950/60 hover:bg-slate-900/80 border border-slate-800/60 backdrop-blur-xl text-slate-400 hover:text-slate-200 transition shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing group shrink-0"
             title="Drag header anywhere on screen"
           >
             <GripHorizontal className="w-3.5 h-3.5 group-hover:text-indigo-400 transition" />
           </div>
 
-          {/* Streak Pill */}
-          <button
-            onClick={onToggleStats}
-            className="px-3 py-1.5 rounded-2xl bg-slate-950/70 hover:bg-slate-900/90 border border-amber-500/30 backdrop-blur-xl text-amber-300 text-xs font-bold transition shadow-xl flex items-center gap-1.5 active:scale-95 group shrink-0"
-            title="Daily Focus Streak - Click for Analytics"
-          >
-            <Flame className="w-3.5 h-3.5 fill-current text-amber-400 group-hover:scale-110 transition" />
-            <span>{currentStreak}d Streak</span>
-          </button>
-
-          {/* Quick Customize Sidebar Trigger */}
-          <button
-            onClick={() => onToggleCustomizer()}
-            className="p-2 px-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900/90 border border-indigo-500/30 text-indigo-200 hover:text-white backdrop-blur-xl transition shadow-xl flex items-center gap-2 text-xs font-semibold active:scale-95 group shrink-0"
-            title="Open Workspace Customizer"
-          >
-            <Sliders className="w-3.5 h-3.5 text-indigo-400 group-hover:rotate-45 transition duration-300" />
-            <span className="hidden sm:inline">Customize</span>
-          </button>
+          {/* Global Workspace Search Bar */}
+          {searchBarElement}
 
           {/* Interactive User Avatar & System Command Orb */}
           <button
@@ -494,6 +482,39 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
                 </div>
               </div>
 
+              {/* Animated Streak Focus Card */}
+              <div className="py-2">
+                <button
+                  onClick={() => {
+                    setIsOpen(false);
+                    onToggleStats();
+                  }}
+                  className="w-full p-3 rounded-2xl bg-gradient-to-br from-amber-950/50 via-slate-900/90 to-orange-950/40 hover:from-amber-950/70 hover:to-orange-950/60 border border-amber-500/40 text-left transition-all duration-300 group shadow-lg animate-streak-glow flex items-center justify-between gap-3 active:scale-[0.98]"
+                  title="View Daily Streak & Focus Analytics"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center text-slate-950 shrink-0 shadow-md shadow-amber-950/60 relative overflow-hidden group-hover:scale-105 transition-transform">
+                      <div className="absolute inset-0 bg-white/20 opacity-0 group-hover:opacity-100 transition" />
+                      <Flame className="w-6 h-6 fill-slate-950 text-slate-950 animate-flame-flicker" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-orange-300 to-amber-400">
+                          {currentStreak} Day Focus Streak
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-amber-300/80 mt-0.5 truncate font-medium">
+                        {currentStreak > 0 ? 'Consistency is power • Tap for analytics' : 'Start a focus session today'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 group-hover:translate-x-0.5 group-hover:bg-amber-500/20 transition-all shrink-0">
+                    <BarChart2 className="w-3.5 h-3.5" />
+                  </div>
+                </button>
+              </div>
+
               {/* Cloud Sync Status */}
               <div className="py-3">
                 <div className="p-2.5 bg-slate-900/90 rounded-2xl border border-slate-800/80 flex items-center justify-between text-xs">
@@ -527,9 +548,33 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
 
               {/* Workspace Command Hub Grid */}
               <div className="py-3 space-y-2">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-1">
-                  Workspace Hub & Tools
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-1 flex items-center justify-between">
+                  <span>Workspace Hub & Tools</span>
+                  <span className="text-[9px] font-mono text-slate-500">⌘K / /</span>
                 </div>
+
+                {onOpenSearch && (
+                  <button
+                    onClick={() => {
+                      setIsOpen(false);
+                      onOpenSearch();
+                    }}
+                    className="w-full p-2.5 rounded-2xl bg-gradient-to-r from-indigo-950/80 via-slate-900/90 to-slate-900/90 hover:from-indigo-900/90 hover:to-slate-800/90 border border-indigo-500/40 text-left transition flex items-center gap-2.5 group shadow-sm"
+                  >
+                    <div className="w-6 h-6 rounded-lg bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-300 shrink-0">
+                      <Search className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white truncate flex items-center justify-between">
+                        <span>Global Search & Switch</span>
+                        <kbd className="px-1.5 py-0.2 bg-slate-900 text-indigo-300 border border-indigo-500/30 text-[9px] rounded font-mono font-bold">
+                          ⌘K
+                        </kbd>
+                      </div>
+                      <div className="text-[10px] text-slate-400 truncate">Find templates, notes, tasks & audio</div>
+                    </div>
+                  </button>
+                )}
 
                 <div className="grid grid-cols-2 gap-1.5">
                   <button

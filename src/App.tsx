@@ -10,6 +10,7 @@ import {
   saveCustomImagesToCloud,
   saveRollbackSnapshotToCloud,
   clearRollbackSnapshotFromCloud,
+  savePersonalTemplate,
 } from './firebase';
 import {
   WorkspaceConfig,
@@ -22,6 +23,7 @@ import {
   RoomState,
   CustomImageRecord,
   RollbackSnapshot,
+  Template,
 } from './types';
 import {
   DEFAULT_WORKSPACE_CONFIG,
@@ -47,8 +49,9 @@ import { AiAssistantPanel } from './components/AiAssistantPanel';
 import { AiSoundGeneratorModal } from './components/AiSoundGeneratorModal';
 import { CustomizerDrawer } from './components/CustomizerDrawer';
 import { FloatingWorkspaceBadge } from './components/FloatingWorkspaceBadge';
+import { GlobalSearchBar } from './components/GlobalSearchBar';
 import { LandingPage } from './components/LandingPage';
-import { Sparkles as SparklesIcon, Undo2, RotateCcw, X as CloseIcon, ShieldCheck, Flame } from 'lucide-react';
+import { Sparkles as SparklesIcon, Undo2, RotateCcw, X as CloseIcon, ShieldCheck, Flame, Layout as LayoutIcon, RefreshCw as RefreshCwIcon } from 'lucide-react';
 
 export function App() {
   // 1. Core Workspace Config State (Persisted across refreshes & hard refreshes)
@@ -280,11 +283,23 @@ export function App() {
 
   // 6. Firebase Auth & Cloud Sync State
   const [user, setUser] = useState<User | null>(null);
+  const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const hasHydratedFromCloud = useRef<boolean>(false);
   const syncTimeoutRef = useRef<any>(null);
+
+  // 6.1. Active Template & Template Auto-Sync Engine
+  const [activeTemplate, setActiveTemplate] = useState<Template | null>(() =>
+    safeLocalStorageJSONGet<Template | null>('airiser_active_template', null)
+  );
+  const [isTemplateAutoSync, setIsTemplateAutoSync] = useState<boolean>(() =>
+    safeLocalStorageJSONGet<boolean>('airiser_template_auto_sync', true)
+  );
+  const [isTemplateSyncing, setIsTemplateSyncing] = useState<boolean>(false);
+  const [lastTemplateSyncedAt, setLastTemplateSyncedAt] = useState<Date | null>(null);
+  const templateSyncTimeoutRef = useRef<any>(null);
 
   // Listen to Auth State Changes
   useEffect(() => {
@@ -375,6 +390,43 @@ export function App() {
       }
     }, 1200);
   }, [user, config, tasks, stickyNotes, notepadContent, logs, streak, customImages]);
+
+  // Debounced auto-sync to the Active Template whenever workspace changes
+  const triggerTemplateAutoSync = useCallback(() => {
+    if (!activeTemplate || !isTemplateAutoSync) return;
+
+    if (templateSyncTimeoutRef.current) {
+      clearTimeout(templateSyncTimeoutRef.current);
+    }
+
+    templateSyncTimeoutRef.current = setTimeout(async () => {
+      setIsTemplateSyncing(true);
+      try {
+        const updatedTmpl: Template = {
+          ...activeTemplate,
+          config,
+          tasks: activeTemplate.tasks !== undefined ? tasks : activeTemplate.tasks,
+          stickyNotes: activeTemplate.stickyNotes !== undefined ? stickyNotes : activeTemplate.stickyNotes,
+          notepad: activeTemplate.notepad !== undefined ? notepadContent : activeTemplate.notepad,
+          thumbnail: config.background.workItems?.[0]?.thumbnailUrl || config.background.workItems?.[0]?.url || activeTemplate.thumbnail,
+          updatedAt: new Date().toISOString(),
+        };
+        const saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+        setActiveTemplate(saved);
+        safeLocalStorageSet('airiser_active_template', JSON.stringify(saved));
+        setLastTemplateSyncedAt(new Date());
+      } catch (err) {
+        console.warn('Auto-syncing to active template warning:', err);
+      } finally {
+        setIsTemplateSyncing(false);
+      }
+    }, 1200);
+  }, [activeTemplate, isTemplateAutoSync, user, config, tasks, stickyNotes, notepadContent]);
+
+  // Trigger template auto-sync on state changes
+  useEffect(() => {
+    triggerTemplateAutoSync();
+  }, [config, tasks, stickyNotes, notepadContent, triggerTemplateAutoSync]);
 
   // Sync state to local storage & cloud trigger
   useEffect(() => {
@@ -487,12 +539,78 @@ export function App() {
     }
   };
 
+  // Active Template linkage and sync controls
+  const handleSetActiveTemplate = (tmpl: Template | null, enableAutoSync: boolean = true) => {
+    setActiveTemplate(tmpl);
+    setIsTemplateAutoSync(enableAutoSync);
+    if (tmpl) {
+      safeLocalStorageSet('airiser_active_template', JSON.stringify(tmpl));
+      safeLocalStorageSet('airiser_template_auto_sync', JSON.stringify(enableAutoSync));
+      setRollbackToast({
+        message: `⚡ Active template "${tmpl.name}" linked! All workspace updates will auto-sync to this template.`,
+        timestamp: Date.now(),
+      });
+    } else {
+      safeLocalStorageSet('airiser_active_template', '');
+    }
+  };
+
+  const handleToggleTemplateAutoSync = () => {
+    setIsTemplateAutoSync((prev) => {
+      const next = !prev;
+      safeLocalStorageSet('airiser_template_auto_sync', JSON.stringify(next));
+      setRollbackToast({
+        message: next ? '⚡ Template auto-sync enabled' : '⏸️ Template auto-sync paused',
+        timestamp: Date.now(),
+      });
+      return next;
+    });
+  };
+
+  const handleDetachActiveTemplate = () => {
+    setActiveTemplate(null);
+    safeLocalStorageSet('airiser_active_template', '');
+    setRollbackToast({
+      message: 'Detached active template. Future changes will only save to your personal workspace account.',
+      timestamp: Date.now(),
+    });
+  };
+
+  const handleSyncActiveTemplateNow = async () => {
+    if (!activeTemplate) return;
+    setIsTemplateSyncing(true);
+    try {
+      const updatedTmpl: Template = {
+        ...activeTemplate,
+        config,
+        tasks: activeTemplate.tasks !== undefined ? tasks : activeTemplate.tasks,
+        stickyNotes: activeTemplate.stickyNotes !== undefined ? stickyNotes : activeTemplate.stickyNotes,
+        notepad: activeTemplate.notepad !== undefined ? notepadContent : activeTemplate.notepad,
+        thumbnail: config.background.workItems?.[0]?.thumbnailUrl || config.background.workItems?.[0]?.url || activeTemplate.thumbnail,
+        updatedAt: new Date().toISOString(),
+      };
+      const saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+      setActiveTemplate(saved);
+      safeLocalStorageSet('airiser_active_template', JSON.stringify(saved));
+      setLastTemplateSyncedAt(new Date());
+      setRollbackToast({
+        message: `✨ Synced current workspace to template "${saved.name}"!`,
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.warn('Failed to sync active template now:', err);
+    } finally {
+      setIsTemplateSyncing(false);
+    }
+  };
+
   // Activate & Apply Full Template (Config, Tasks, Notes, Notepad)
   const handleApplyTemplate = async (
     newConfig: WorkspaceConfig,
     newTasks?: Task[],
     newStickyNotes?: StickyNote[],
-    newNotepad?: string
+    newNotepad?: string,
+    appliedTemplate?: Template
   ) => {
     setConfig(newConfig);
     if (newTasks && newTasks.length > 0) {
@@ -503,6 +621,13 @@ export function App() {
     }
     if (newNotepad !== undefined && newNotepad !== '') {
       setNotepadContent(newNotepad);
+    }
+
+    if (appliedTemplate) {
+      setActiveTemplate(appliedTemplate);
+      safeLocalStorageSet('airiser_active_template', JSON.stringify(appliedTemplate));
+      safeLocalStorageSet('airiser_template_auto_sync', JSON.stringify(true));
+      setIsTemplateAutoSync(true);
     }
 
     if (user) {
@@ -945,10 +1070,11 @@ export function App() {
   }
 
   // 2. Unauthenticated Gate: Surprise Interactive Landing Page
-  if (!user) {
+  if (!user && !isGuestMode) {
     return (
       <LandingPage
         onSignIn={handleSignIn}
+        onExploreGuest={() => setIsGuestMode(true)}
         isLoading={isAuthLoading}
       />
     );
@@ -974,6 +1100,55 @@ export function App() {
         currentStreak={streak.currentStreak}
         viewMode={viewMode}
         pendingTasksCount={tasks.filter((t) => !t.completed).length}
+        searchBarElement={
+          <GlobalSearchBar
+            config={config}
+            tasks={tasks}
+            stickyNotes={stickyNotes}
+            notepadContent={notepadContent}
+            user={user}
+            activeTemplate={activeTemplate}
+            timerStatus={timerStatus}
+            currentStreak={streak.currentStreak}
+            onApplyTemplate={handleApplyTemplate}
+            onChangeConfig={setConfig}
+            onChangeTasks={handleTasksChange}
+            onChangeStickyNotes={setStickyNotes}
+            onChangeNotepad={setNotepadContent}
+            onToggleTasks={() => setIsTasksOpen(!isTasksOpen)}
+            onToggleNotes={() => setIsNotesOpen(!isNotesOpen)}
+            onToggleCustomizer={(tab) => {
+              setCustomizerInitialTab(tab || 'background');
+              setIsCustomizerOpen(true);
+            }}
+            onToggleAudio={() => {
+              if (viewMode === 'zen') setViewMode('fullscreen');
+              window.dispatchEvent(new CustomEvent('reset-audio-position'));
+              setCustomizerInitialTab('audio');
+              setIsCustomizerOpen(true);
+            }}
+            onToggleStats={() => setIsStatsOpen(true)}
+            onToggleTemplates={() => setIsTemplatesOpen(true)}
+            onToggleMarketplace={() => setIsMarketplaceOpen(true)}
+            onToggleRooms={() => setIsRoomsOpen(true)}
+            onToggleAiChat={() => setIsAiChatOpen(!isAiChatOpen)}
+            onToggleSoundGenerator={() => setIsSoundGenOpen(true)}
+            onToggleZenMode={() => setViewMode(viewMode === 'zen' ? 'fullscreen' : 'zen')}
+            onSetTimerStatus={setTimerStatus}
+            onRollback={handleRollback}
+            canRollback={!!preResetSnapshot || !!rollbackSnapshot}
+            onShowToast={(message) => {
+              setRollbackToast({
+                message,
+                timestamp: Date.now(),
+              });
+            }}
+          />
+        }
+        onOpenSearch={() => {
+          // Trigger global search shortcut
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+        }}
         onSignIn={handleSignIn}
         onSignOut={handleSignOut}
         onSyncNow={handleSyncNow}
@@ -1157,6 +1332,14 @@ export function App() {
         currentNotepad={notepadContent}
         roomParticipants={roomState?.participants || []}
         onApplyTemplate={handleApplyTemplate}
+        activeTemplate={activeTemplate}
+        isTemplateAutoSync={isTemplateAutoSync}
+        isTemplateSyncing={isTemplateSyncing}
+        lastTemplateSyncedAt={lastTemplateSyncedAt}
+        onSetActiveTemplate={handleSetActiveTemplate}
+        onToggleTemplateAutoSync={handleToggleTemplateAutoSync}
+        onDetachActiveTemplate={handleDetachActiveTemplate}
+        onSyncActiveTemplateNow={handleSyncActiveTemplateNow}
         onOpenMarketplace={() => {
           setIsTemplatesOpen(false);
           setIsMarketplaceOpen(true);
@@ -1282,6 +1465,70 @@ export function App() {
           >
             <CloseIcon className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* 13. Floating Active Template Auto-Sync Pill */}
+      {activeTemplate && (
+        <div className="fixed bottom-6 left-6 z-40 hidden sm:flex items-center gap-2.5 p-1.5 pl-3 pr-2 bg-slate-950/90 hover:bg-slate-950 border border-indigo-500/40 hover:border-indigo-500/70 rounded-2xl shadow-2xl backdrop-blur-xl text-slate-100 text-xs animate-in fade-in slide-in-from-bottom-2 duration-300 transition group">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 rounded-xl bg-indigo-500/20 text-indigo-400">
+              <LayoutIcon className="w-3.5 h-3.5" />
+            </div>
+            <div className="min-w-0 max-w-[150px] md:max-w-[220px]">
+              <div className="font-bold text-white text-[11px] truncate flex items-center gap-1">
+                <span>{activeTemplate.name}</span>
+                {activeTemplate.isGroup === 1 && (
+                  <span className="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-semibold">
+                    Group
+                  </span>
+                )}
+              </div>
+              <div className="text-[9px] text-slate-400 flex items-center gap-1.5">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    !isTemplateAutoSync
+                      ? 'bg-slate-500'
+                      : isTemplateSyncing
+                      ? 'bg-amber-400 animate-ping'
+                      : 'bg-emerald-400'
+                  }`}
+                />
+                <span className="truncate">
+                  {!isTemplateAutoSync
+                    ? 'Auto-sync paused'
+                    : isTemplateSyncing
+                    ? 'Syncing changes...'
+                    : 'Auto-syncing to template'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 pl-1.5 border-l border-slate-800">
+            <button
+              onClick={handleSyncActiveTemplateNow}
+              disabled={isTemplateSyncing}
+              className="p-1.5 text-slate-300 hover:text-white rounded-lg hover:bg-slate-800 transition disabled:opacity-50"
+              title="Sync current workspace to template now"
+            >
+              <RefreshCwIcon className={`w-3.5 h-3.5 ${isTemplateSyncing ? 'animate-spin text-indigo-400' : ''}`} />
+            </button>
+            <button
+              onClick={() => setIsTemplatesOpen(true)}
+              className="px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 hover:text-indigo-200 text-[10px] font-semibold rounded-lg transition"
+              title="Manage Template"
+            >
+              Manage
+            </button>
+            <button
+              onClick={handleDetachActiveTemplate}
+              className="p-1 text-slate-400 hover:text-rose-300 rounded-lg hover:bg-slate-800 transition"
+              title="Stop auto-syncing to this template (Detach)"
+            >
+              <CloseIcon className="w-3 h-3" />
+            </button>
+          </div>
         </div>
       )}
 

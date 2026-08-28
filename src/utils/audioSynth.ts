@@ -3,6 +3,7 @@
 class AmbientSynthesizer {
   private ctx: AudioContext | null = null;
   private activeNodes: Map<string, { gain: GainNode; stop: () => void }> = new Map();
+  private customAudioElements: Map<string, HTMLAudioElement> = new Map();
 
   private getContext(): AudioContext {
     if (!this.ctx) {
@@ -16,9 +17,14 @@ class AmbientSynthesizer {
   }
 
   public setVolume(id: string, volume: number) {
+    const clampedVol = Math.max(0, Math.min(1, volume));
     const node = this.activeNodes.get(id);
     if (node && this.ctx) {
-      node.gain.gain.setTargetAtTime(Math.max(0, Math.min(1, volume)), this.ctx.currentTime, 0.1);
+      node.gain.gain.setTargetAtTime(clampedVol, this.ctx.currentTime, 0.1);
+    }
+    const audioEl = this.customAudioElements.get(id);
+    if (audioEl) {
+      audioEl.volume = clampedVol;
     }
   }
 
@@ -28,11 +34,26 @@ class AmbientSynthesizer {
       node.stop();
       this.activeNodes.delete(id);
     }
+    const audioEl = this.customAudioElements.get(id);
+    if (audioEl) {
+      try {
+        audioEl.pause();
+        audioEl.currentTime = 0;
+      } catch {}
+      this.customAudioElements.delete(id);
+    }
   }
 
   public stopAll() {
     this.activeNodes.forEach((node) => node.stop());
     this.activeNodes.clear();
+    this.customAudioElements.forEach((el) => {
+      try {
+        el.pause();
+        el.currentTime = 0;
+      } catch {}
+    });
+    this.customAudioElements.clear();
   }
 
   // Tactile mechanical switch click sound (high-frequency tactile impulse)
@@ -231,8 +252,39 @@ class AmbientSynthesizer {
     this.stopAmbient('binaural-synth');
   }
 
-  // Play procedural ambient sounds
-  public playAmbient(id: string, type: string, initialVolume: number) {
+  // Play procedural or custom URL ambient sounds
+  public playAmbient(id: string, type: string, initialVolume: number, url?: string) {
+    const clampedVol = Math.max(0, Math.min(1, initialVolume));
+
+    // 1. If a custom URL is provided (uploaded audio file data URL or audio stream URL)
+    if (url && (url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:'))) {
+      if (this.customAudioElements.has(id)) {
+        const audioEl = this.customAudioElements.get(id);
+        if (audioEl) {
+          audioEl.volume = clampedVol;
+          if (audioEl.paused) {
+            audioEl.play().catch(() => {});
+          }
+        }
+        return;
+      }
+
+      try {
+        const audio = new Audio(url);
+        audio.loop = true;
+        audio.volume = clampedVol;
+        audio.crossOrigin = 'anonymous';
+        audio.play().catch((e) => {
+          console.log('Custom ambient audio play prevented or error:', e);
+        });
+        this.customAudioElements.set(id, audio);
+        return;
+      } catch (err) {
+        console.warn('Failed to initialize ambient audio element:', err);
+      }
+    }
+
+    // 2. Procedural Web Audio API synthesis
     if (this.activeNodes.has(id)) {
       this.setVolume(id, initialVolume);
       return;
@@ -241,7 +293,7 @@ class AmbientSynthesizer {
     try {
       const ctx = this.getContext();
       const masterGain = ctx.createGain();
-      masterGain.gain.setValueAtTime(Math.max(0, Math.min(1, initialVolume)), ctx.currentTime);
+      masterGain.gain.setValueAtTime(clampedVol, ctx.currentTime);
       masterGain.connect(ctx.destination);
 
       let stopFn = () => {};

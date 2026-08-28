@@ -53,7 +53,7 @@ export interface BackgroundConfig {
   };
 }
 
-export type AudioSourceType = 'builtin' | 'upload' | 'youtube' | 'soundcloud';
+export type AudioSourceType = 'builtin' | 'upload' | 'youtube' | 'soundcloud' | 'custom_url' | 'url';
 
 export interface AudioTrack {
   id: string;
@@ -63,16 +63,36 @@ export interface AudioTrack {
   source: AudioSourceType;
   duration?: number;
   embedId?: string; // for youtube or soundcloud
+  isCustom?: boolean;
+  addedAt?: string;
 }
 
 export interface AmbientTrack {
   id: string;
   name: string;
   icon: string;
-  type: 'rain' | 'fireplace' | 'cafe' | 'forest' | 'waves' | 'whitenoise' | 'crickets' | 'thunder';
+  type: 'rain' | 'fireplace' | 'cafe' | 'forest' | 'waves' | 'whitenoise' | 'crickets' | 'thunder' | 'custom' | string;
   url?: string;
   volume: number; // 0.0 to 1.0
   active: boolean;
+  isCustom?: boolean;
+  source?: 'builtin' | 'upload' | 'url' | 'ai';
+  addedAt?: string;
+}
+
+export interface CustomAudioRecord {
+  id: string;
+  title: string;
+  artist?: string;
+  url: string;
+  source: AudioSourceType;
+  category: 'music' | 'ambient';
+  ambientType?: string;
+  icon?: string;
+  volume?: number;
+  duration?: number;
+  isCustom: boolean;
+  addedAt: string;
 }
 
 export interface AudioConfig {

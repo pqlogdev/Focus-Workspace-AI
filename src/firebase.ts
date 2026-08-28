@@ -36,6 +36,7 @@ import {
   Template,
   TemplateMember,
   CustomImageRecord,
+  CustomAudioRecord,
   RollbackSnapshot,
 } from './types';
 import { PRESET_TEMPLATES } from './data/presetTemplates';
@@ -91,6 +92,27 @@ googleProvider.setCustomParameters({
 export const db = firebaseConfig.firestoreDatabaseId
   ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
   : getFirestore(app);
+
+// Helper to deeply strip undefined values so Firestore never throws unsupported field value: undefined
+export function sanitizeForFirestore<T>(obj: T): T {
+  if (obj === undefined || obj === null) return obj;
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (typeof obj === 'object') {
+    const res: any = {};
+    for (const key of Object.keys(obj as any)) {
+      const val = (obj as any)[key];
+      if (val !== undefined) {
+        res[key] = sanitizeForFirestore(val);
+      }
+    }
+    return res as T;
+  }
+  return obj;
+}
 
 // Connection test helper
 export async function testFirestoreConnection(): Promise<boolean> {
@@ -202,6 +224,7 @@ export async function saveUserDataToCloud(
     logs?: FocusLog[];
     streak?: Streak;
     customImages?: CustomImageRecord[];
+    customAudio?: CustomAudioRecord[];
     rollbackSnapshot?: RollbackSnapshot | null;
   }
 ): Promise<void> {
@@ -246,6 +269,11 @@ export async function saveUserDataToCloud(
       await setDoc(imagesRef, { items: data.customImages, updatedAt: new Date().toISOString() });
     }
 
+    if (data.customAudio) {
+      const audioRef = doc(db, 'users', userId, 'audioLibrary', 'all');
+      await setDoc(audioRef, { items: data.customAudio, updatedAt: new Date().toISOString() });
+    }
+
     if (data.rollbackSnapshot !== undefined) {
       const snapRef = doc(db, 'users', userId, 'rollbackSnapshot', 'latest');
       if (data.rollbackSnapshot) {
@@ -270,6 +298,7 @@ export async function loadUserDataFromCloud(userId: string): Promise<{
   logs?: FocusLog[];
   streak?: Streak;
   customImages?: CustomImageRecord[];
+  customAudio?: CustomAudioRecord[];
   rollbackSnapshot?: RollbackSnapshot | null;
 } | null> {
   try {
@@ -280,6 +309,7 @@ export async function loadUserDataFromCloud(userId: string): Promise<{
     const notesSnap = await getDoc(doc(db, 'users', userId, 'stickyNotes', 'all'));
     const logsSnap = await getDoc(doc(db, 'users', userId, 'focusLogs', 'all'));
     const imagesSnap = await getDoc(doc(db, 'users', userId, 'imageLibrary', 'all'));
+    const audioSnap = await getDoc(doc(db, 'users', userId, 'audioLibrary', 'all'));
     const rollbackSnap = await getDoc(doc(db, 'users', userId, 'rollbackSnapshot', 'latest'));
 
     const hasAnyDoc =
@@ -290,6 +320,7 @@ export async function loadUserDataFromCloud(userId: string): Promise<{
       notesSnap.exists() ||
       logsSnap.exists() ||
       imagesSnap.exists() ||
+      audioSnap.exists() ||
       rollbackSnap.exists();
 
     if (!hasAnyDoc) {
@@ -304,11 +335,41 @@ export async function loadUserDataFromCloud(userId: string): Promise<{
       stickyNotes: notesSnap.exists() ? notesSnap.data()?.items : undefined,
       logs: logsSnap.exists() ? logsSnap.data()?.items : undefined,
       customImages: imagesSnap.exists() ? (imagesSnap.data()?.items as CustomImageRecord[]) : undefined,
+      customAudio: audioSnap.exists() ? (audioSnap.data()?.items as CustomAudioRecord[]) : undefined,
       rollbackSnapshot: rollbackSnap.exists() ? (rollbackSnap.data() as RollbackSnapshot) : null,
     };
   } catch (error) {
     console.warn('Failed to load user data from cloud:', error);
     return null;
+  }
+}
+
+/**
+ * Save custom audio library to cloud
+ */
+export async function saveCustomAudioToCloud(userId: string, items: CustomAudioRecord[]): Promise<void> {
+  try {
+    const audioRef = doc(db, 'users', userId, 'audioLibrary', 'all');
+    await setDoc(audioRef, { items, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    console.warn('Failed to save custom audio to cloud:', error);
+  }
+}
+
+/**
+ * Load custom audio library from cloud
+ */
+export async function loadCustomAudioFromCloud(userId: string): Promise<CustomAudioRecord[]> {
+  try {
+    const audioRef = doc(db, 'users', userId, 'audioLibrary', 'all');
+    const snap = await getDoc(audioRef);
+    if (snap.exists() && snap.data()?.items) {
+      return snap.data().items as CustomAudioRecord[];
+    }
+    return [];
+  } catch (error) {
+    console.warn('Failed to load custom audio from cloud:', error);
+    return [];
   }
 }
 
@@ -417,35 +478,62 @@ export function sanitizeTemplateMembers(
 export async function savePersonalTemplate(userId: string, template: Template): Promise<Template> {
   try {
     const isGroup = template.isGroup === 1 ? 1 : 0;
+    const effectiveUserId = userId || auth.currentUser?.uid || 'guest';
+    const effectiveUserName = template.creatorName || auth.currentUser?.displayName || 'Focus Explorer';
+
     const { members, memberUids } = sanitizeTemplateMembers(
-      template.creatorId || userId,
-      template.creatorName,
-      template.creatorPhoto,
+      template.creatorId || effectiveUserId,
+      effectiveUserName,
+      template.creatorPhoto || auth.currentUser?.photoURL || undefined,
       template.members
     );
 
     const cleanTemplate: Template = {
       ...template,
+      creatorId: template.creatorId || effectiveUserId,
+      creatorName: effectiveUserName,
+      creatorPhoto: template.creatorPhoto || auth.currentUser?.photoURL || '',
       isGroup,
       members,
       memberUids,
+      tasks: template.tasks || [],
+      stickyNotes: template.stickyNotes || [],
+      notepad: template.notepad || '',
       updatedAt: new Date().toISOString(),
       createdAt: template.createdAt || new Date().toISOString(),
     };
 
-    // Save to user subcollection
-    const userTemplateRef = doc(db, 'users', userId, 'templates', template.id);
-    await setDoc(userTemplateRef, cleanTemplate);
+    // 1. Always update local storage cache for instant offline & guest access
+    try {
+      const raw = localStorage.getItem('airiser_personal_templates');
+      const existing: Template[] = raw ? JSON.parse(raw) : [];
+      const updated = [cleanTemplate, ...existing.filter((t) => t.id !== cleanTemplate.id)];
+      localStorage.setItem('airiser_personal_templates', JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Local storage template cache error:', e);
+    }
 
-    // If it is a group template (isGroup: 1) or public marketplace template, also persist to root templates collection
-    if (isGroup === 1 || cleanTemplate.isPublic) {
-      const rootTemplateRef = doc(db, 'templates', template.id);
-      await setDoc(rootTemplateRef, cleanTemplate, { merge: true });
+    // 2. If user is authenticated, persist to Firestore
+    if (auth.currentUser && effectiveUserId && effectiveUserId !== 'guest' && effectiveUserId !== 'anonymous') {
+      try {
+        const firestorePayload = sanitizeForFirestore(cleanTemplate);
+        const userTemplateRef = doc(db, 'users', effectiveUserId, 'templates', template.id);
+        await setDoc(userTemplateRef, firestorePayload, { merge: true });
+
+        // If it is a group template (isGroup: 1) or public marketplace template, also persist to root templates collection
+        if (isGroup === 1 || cleanTemplate.isPublic) {
+          const rootTemplateRef = doc(db, 'templates', template.id);
+          await setDoc(rootTemplateRef, firestorePayload, { merge: true });
+        }
+      } catch (cloudErr) {
+        console.warn('Firestore template write warning (local fallback succeeded):', cloudErr);
+        handleFirestoreError(cloudErr, OperationType.WRITE, `users/${effectiveUserId}/templates/${template.id}`);
+      }
     }
 
     return cleanTemplate;
   } catch (error) {
-    console.error('Error saving template to Firestore:', error);
+    console.error('Error saving template:', error);
     throw error;
   }
 }
@@ -453,41 +541,59 @@ export async function savePersonalTemplate(userId: string, template: Template): 
 /**
  * Load all personal (isGroup: 0) and group (isGroup: 1) templates accessible to the user
  */
-export async function loadPersonalTemplates(userId: string, userEmail?: string | null): Promise<Template[]> {
-  try {
-    const templatesMap = new Map<string, Template>();
+export async function loadPersonalTemplates(userId?: string | null, userEmail?: string | null): Promise<Template[]> {
+  const templatesMap = new Map<string, Template>();
 
-    // 1. Fetch from user's subcollection
+  // 1. First load from localStorage to ensure instant availability & guest mode support
+  try {
+    const raw = localStorage.getItem('airiser_personal_templates');
+    if (raw) {
+      const localList: Template[] = JSON.parse(raw);
+      localList.forEach((t) => {
+        if (t && t.id) {
+          templatesMap.set(t.id, t);
+        }
+      });
+    }
+  } catch (e) {
+    console.warn('Local personal templates parse error:', e);
+  }
+
+  // 2. Fetch from user's subcollection in Firestore if authenticated
+  const effectiveUserId = userId || auth.currentUser?.uid;
+  if (effectiveUserId && effectiveUserId !== 'guest' && effectiveUserId !== 'anonymous' && auth.currentUser) {
     try {
-      const userTemplatesCol = collection(db, 'users', userId, 'templates');
+      const userTemplatesCol = collection(db, 'users', effectiveUserId, 'templates');
       const snap = await getDocs(userTemplatesCol);
       snap.forEach((d) => {
         const data = d.data() as Template;
         templatesMap.set(data.id, {
           ...data,
+          id: d.id,
           isGroup: data.isGroup === 1 ? 1 : 0,
           members: data.members || [],
-          memberUids: data.memberUids || [data.creatorId],
+          memberUids: data.memberUids || [data.creatorId || effectiveUserId],
         });
       });
     } catch (e) {
       console.warn('Could not fetch user subcollection templates:', e);
     }
 
-    // 2. Fetch from root templates collection to find Group templates where user is in members list
+    // 3. Fetch from root templates collection to find Group templates where user is in members list
     try {
       const rootTemplatesCol = collection(db, 'templates');
       const rootSnap = await getDocs(rootTemplatesCol);
       rootSnap.forEach((d) => {
         const data = d.data() as Template;
         const isMember =
-          data.creatorId === userId ||
-          (data.memberUids && data.memberUids.includes(userId)) ||
-          (data.members && data.members.some((m) => m.uid === userId || (userEmail && m.email === userEmail)));
+          data.creatorId === effectiveUserId ||
+          (data.memberUids && data.memberUids.includes(effectiveUserId)) ||
+          (data.members && data.members.some((m) => m.uid === effectiveUserId || (userEmail && m.email === userEmail)));
 
         if (isMember) {
           templatesMap.set(data.id, {
             ...data,
+            id: d.id,
             isGroup: data.isGroup === 1 ? 1 : 0,
             members: data.members || [],
             memberUids: data.memberUids || (data.members ? data.members.map((m) => m.uid) : [data.creatorId]),
@@ -497,15 +603,12 @@ export async function loadPersonalTemplates(userId: string, userEmail?: string |
     } catch (e) {
       console.warn('Could not fetch root group templates:', e);
     }
-
-    const templates = Array.from(templatesMap.values());
-    return templates.sort(
-      (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
-    );
-  } catch (error) {
-    console.warn('Failed to load personal & group templates:', error);
-    return [];
   }
+
+  const templates = Array.from(templatesMap.values());
+  return templates.sort(
+    (a, b) => new Date(b.updatedAt || b.createdAt || '').getTime() - new Date(a.updatedAt || a.createdAt || '').getTime()
+  );
 }
 
 /**
@@ -519,12 +622,27 @@ export async function updateTemplateMembers(
     const cappedMembers = members.slice(0, 5);
     const memberUids = cappedMembers.map((m) => m.uid).filter(Boolean);
 
-    const rootRef = doc(db, 'templates', templateId);
-    await updateDoc(rootRef, {
-      members: cappedMembers,
-      memberUids,
-      updatedAt: new Date().toISOString(),
-    });
+    // Update local cache
+    try {
+      const raw = localStorage.getItem('airiser_personal_templates');
+      if (raw) {
+        const existing: Template[] = JSON.parse(raw);
+        const updated = existing.map((t) =>
+          t.id === templateId ? { ...t, members: cappedMembers, memberUids, updatedAt: new Date().toISOString() } : t
+        );
+        localStorage.setItem('airiser_personal_templates', JSON.stringify(updated));
+      }
+    } catch (e) {}
+
+    // Update Firestore if authenticated
+    if (auth.currentUser) {
+      const rootRef = doc(db, 'templates', templateId);
+      await updateDoc(rootRef, sanitizeForFirestore({
+        members: cappedMembers,
+        memberUids,
+        updatedAt: new Date().toISOString(),
+      })).catch(() => {});
+    }
 
     return cappedMembers;
   } catch (error) {
@@ -534,15 +652,29 @@ export async function updateTemplateMembers(
 }
 
 /**
- * Delete a template from Firestore
+ * Delete a template from Firestore & local cache
  */
 export async function deletePersonalTemplate(userId: string, templateId: string): Promise<void> {
   try {
-    const templateRef = doc(db, 'users', userId, 'templates', templateId);
-    await deleteDoc(templateRef).catch(() => {});
+    // 1. Remove from local storage cache
+    try {
+      const raw = localStorage.getItem('airiser_personal_templates');
+      if (raw) {
+        const localList: Template[] = JSON.parse(raw);
+        const filtered = localList.filter((t) => t.id !== templateId);
+        localStorage.setItem('airiser_personal_templates', JSON.stringify(filtered));
+      }
+    } catch (e) {}
 
-    const rootTemplateRef = doc(db, 'templates', templateId);
-    await deleteDoc(rootTemplateRef).catch(() => {});
+    // 2. Remove from Firestore if authenticated
+    const effectiveUserId = userId || auth.currentUser?.uid;
+    if (effectiveUserId && effectiveUserId !== 'guest' && effectiveUserId !== 'anonymous' && auth.currentUser) {
+      const templateRef = doc(db, 'users', effectiveUserId, 'templates', templateId);
+      await deleteDoc(templateRef).catch(() => {});
+
+      const rootTemplateRef = doc(db, 'templates', templateId);
+      await deleteDoc(rootTemplateRef).catch(() => {});
+    }
   } catch (error) {
     console.error('Error deleting template:', error);
     throw error;
@@ -565,14 +697,19 @@ export async function publishTemplateToMarketplace(template: Template): Promise<
       downloadCount: template.downloadCount ?? 0,
       likesCount: template.likesCount ?? 0,
       likedBy: template.likedBy ?? [],
+      tasks: template.tasks || [],
+      stickyNotes: template.stickyNotes || [],
+      notepad: template.notepad || '',
       updatedAt: new Date().toISOString(),
       createdAt: template.createdAt || new Date().toISOString(),
     };
 
-    await setDoc(templateRef, cleanTemplate, { merge: true });
+    const sanitized = sanitizeForFirestore(cleanTemplate);
+    await setDoc(templateRef, sanitized, { merge: true });
     return cleanTemplate;
   } catch (error) {
     console.error('Error publishing template to marketplace:', error);
+    handleFirestoreError(error, OperationType.WRITE, `templates/${template.id}`);
     throw error;
   }
 }
@@ -613,12 +750,14 @@ export async function updateMarketplaceTemplate(
 ): Promise<void> {
   try {
     const templateRef = doc(db, 'templates', templateId);
-    await updateDoc(templateRef, {
+    const sanitized = sanitizeForFirestore({
       ...updates,
       updatedAt: new Date().toISOString(),
     });
+    await updateDoc(templateRef, sanitized);
   } catch (error) {
     console.error('Error updating marketplace template:', error);
+    handleFirestoreError(error, OperationType.UPDATE, `templates/${templateId}`);
     throw error;
   }
 }

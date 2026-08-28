@@ -109,6 +109,44 @@
 .animate-bar-4 { animation: soundbar 0.7s ease-in-out infinite 0.45s; }
 .animate-bar-5 { animation: soundbar 0.9s ease-in-out infinite 0.2s; }
 
+@keyframes flameFlicker {
+  0%, 100% {
+    transform: scale(1) rotate(0deg);
+    filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.6));
+  }
+  25% {
+    transform: scale(1.1) rotate(-3deg);
+    filter: drop-shadow(0 0 12px rgba(249, 115, 22, 0.8));
+  }
+  50% {
+    transform: scale(0.95) rotate(2deg);
+    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.7));
+  }
+  75% {
+    transform: scale(1.15) rotate(-2deg);
+    filter: drop-shadow(0 0 14px rgba(239, 68, 68, 0.9));
+  }
+}
+
+.animate-flame-flicker {
+  animation: flameFlicker 2.5s ease-in-out infinite;
+}
+
+@keyframes streakGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.15), inset 0 0 15px rgba(245, 158, 11, 0.05);
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(249, 115, 22, 0.35), inset 0 0 20px rgba(249, 115, 22, 0.15);
+    border-color: rgba(249, 115, 22, 0.6);
+  }
+}
+
+.animate-streak-glow {
+  animation: streakGlow 3s ease-in-out infinite;
+}
+
 /* Custom scrollbar styling for dark luxury theme */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;

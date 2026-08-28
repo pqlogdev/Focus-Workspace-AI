@@ -981,11 +981,14 @@ export const StickyNotesCanvas: React.FC<StickyNotesCanvasProps> = ({ notes, onC
       {/* Floating Add Sticky Note Button */}
       <button
         onClick={addNote}
-        className="fixed bottom-6 left-6 z-30 pointer-events-auto bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold p-3.5 rounded-full shadow-2xl transition transform active:scale-95 flex items-center gap-2 border border-amber-300 hover:shadow-amber-400/25"
+        className="group fixed bottom-6 left-6 z-30 pointer-events-auto bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold p-3 rounded-full shadow-2xl transition-all duration-300 transform active:scale-95 flex items-center border border-amber-300 hover:shadow-amber-400/30 overflow-hidden"
         title="Add Sticky Note"
+        aria-label="Add Sticky Note"
       >
-        <Plus className="w-5 h-5" />
-        <span className="text-xs font-semibold">Sticky Note</span>
+        <Plus className="w-5 h-5 transition-transform duration-300 group-hover:rotate-90 shrink-0" />
+        <span className="max-w-0 group-hover:max-w-xs overflow-hidden opacity-0 group-hover:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap group-hover:ml-2 group-hover:mr-1">
+          Sticky Note
+        </span>
       </button>
     </div>
   );

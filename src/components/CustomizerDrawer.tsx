@@ -3,6 +3,7 @@ import {
   WorkspaceConfig,
   MediaItem,
   FocusMethodType,
+  AudioTrack,
   AmbientTrack,
   ClockStyle,
   FontTheme,
@@ -21,6 +22,7 @@ import { PRESET_MUSIC_TRACKS } from '../data/presetAudio';
 import { ALL_AVAILABLE_AMBIENT_TRACKS } from '../data/availableAmbient';
 import { audioSynth } from '../utils/audioSynth';
 import { ColorPickerControl } from './ColorPickerControl';
+import { AudioUploadModal } from './AudioUploadModal';
 import {
   X,
   Image,
@@ -69,6 +71,14 @@ import {
   FileVideo,
   RefreshCw,
   Play,
+  GripVertical,
+  CloudRain,
+  Flame,
+  Coffee,
+  Trees,
+  Waves,
+  Moon,
+  Wind,
 } from 'lucide-react';
 
 interface CustomizerDrawerProps {
@@ -135,6 +145,14 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [urlPreviewData, setUrlPreviewData] = useState<{ directUrl: string; type: 'image' | 'video'; title: string } | null>(null);
+
+  // Audio Customizer Upload & Drag States
+  const [isAudioUploadModalOpen, setIsAudioUploadModalOpen] = useState(false);
+  const [audioUploadCategory, setAudioUploadCategory] = useState<'music' | 'ambient'>('music');
+  const [draggedMusicIdx, setDraggedMusicIdx] = useState<number | null>(null);
+  const [dragOverMusicIdx, setDragOverMusicIdx] = useState<number | null>(null);
+  const [draggedAmbientIdx, setDraggedAmbientIdx] = useState<number | null>(null);
+  const [dragOverAmbientIdx, setDragOverAmbientIdx] = useState<number | null>(null);
 
   if (!isOpen) return null;
 
@@ -1119,6 +1137,8 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
         {activeTab === 'audio' && (() => {
           const currentAmbientList: AmbientTrack[] =
             config.audio?.ambientPlaylist?.tracks || config.audio?.ambientTracks || [];
+          const currentMusicList: AudioTrack[] =
+            config.audio?.musicPlaylist?.tracks || PRESET_MUSIC_TRACKS;
 
           const toggleAmbient = (track: AmbientTrack) => {
             const exists = currentAmbientList.some((t) => t.id === track.id);
@@ -1151,6 +1171,55 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                 ambientPlaylist: {
                   tracks: updated,
                   shuffleEnabled: config.audio?.ambientPlaylist?.shuffleEnabled ?? false,
+                },
+              },
+            });
+          };
+
+          const moveAmbientInDrawer = (fromIdx: number, toIdx: number) => {
+            if (toIdx < 0 || toIdx >= currentAmbientList.length || fromIdx === toIdx) return;
+            const reordered = [...currentAmbientList];
+            const [removed] = reordered.splice(fromIdx, 1);
+            reordered.splice(toIdx, 0, removed);
+            onChangeConfig({
+              ...config,
+              audio: {
+                ...config.audio,
+                ambientTracks: reordered,
+                ambientPlaylist: {
+                  tracks: reordered,
+                  shuffleEnabled: config.audio?.ambientPlaylist?.shuffleEnabled ?? false,
+                },
+              },
+            });
+          };
+
+          const moveMusicInDrawer = (fromIdx: number, toIdx: number) => {
+            if (toIdx < 0 || toIdx >= currentMusicList.length || fromIdx === toIdx) return;
+            const reordered = [...currentMusicList];
+            const [removed] = reordered.splice(fromIdx, 1);
+            reordered.splice(toIdx, 0, removed);
+            onChangeConfig({
+              ...config,
+              audio: {
+                ...config.audio,
+                musicPlaylist: {
+                  tracks: reordered,
+                  shuffleEnabled: config.audio?.musicPlaylist?.shuffleEnabled ?? false,
+                },
+              },
+            });
+          };
+
+          const removeMusicInDrawer = (id: string) => {
+            const updated = currentMusicList.filter((t) => t.id !== id);
+            onChangeConfig({
+              ...config,
+              audio: {
+                ...config.audio,
+                musicPlaylist: {
+                  tracks: updated,
+                  shuffleEnabled: config.audio?.musicPlaylist?.shuffleEnabled ?? false,
                 },
               },
             });
@@ -1235,57 +1304,219 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                 </div>
               </div>
 
-              {/* Ambient Sound Queue Section */}
-              <div>
-                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider mb-3 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-amber-300">
-                    <Layers className="w-3.5 h-3.5" /> Ambient Sound Queue
-                  </span>
-                  <span className="text-[10px] text-amber-400">
-                    {currentAmbientList.filter((t) => t.active).length} Active
-                  </span>
-                </h3>
+              {/* Music Queue Section with Drag & Drop */}
+              <div className="border-t border-slate-800 pt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <Music className="w-3.5 h-3.5 text-indigo-400" /> Focus Music Playlist
+                    </h3>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Drag ⠿ to reorder tracks linked to this template
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAudioUploadCategory('music');
+                      setIsAudioUploadModalOpen(true);
+                    }}
+                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Upload Music</span>
+                  </button>
+                </div>
 
-                {/* Current Active Queue */}
-                <div className="space-y-2 mb-4">
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
+                  {currentMusicList.map((track, idx) => {
+                    const isDraggingThis = draggedMusicIdx === idx;
+                    const isOverThis = dragOverMusicIdx === idx;
+
+                    return (
+                      <div
+                        key={track.id || `music-cfg-${idx}`}
+                        draggable
+                        onDragStart={(e) => {
+                          setDraggedMusicIdx(idx);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          if (dragOverMusicIdx !== idx) setDragOverMusicIdx(idx);
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverMusicIdx === idx) setDragOverMusicIdx(null);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (draggedMusicIdx !== null && draggedMusicIdx !== idx) {
+                            moveMusicInDrawer(draggedMusicIdx, idx);
+                          }
+                          setDraggedMusicIdx(null);
+                          setDragOverMusicIdx(null);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedMusicIdx(null);
+                          setDragOverMusicIdx(null);
+                        }}
+                        className={`p-2 bg-slate-950/60 border rounded-xl flex items-center justify-between text-xs transition group ${
+                          isDraggingThis
+                            ? 'opacity-40 border-dashed border-indigo-400 bg-indigo-950/20'
+                            : isOverThis
+                            ? 'border-indigo-400 bg-indigo-600/30'
+                            : 'border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="cursor-grab active:cursor-grabbing p-0.5 text-slate-500 hover:text-indigo-300"
+                            title="Drag to reorder"
+                          >
+                            <GripVertical className="w-3.5 h-3.5" />
+                          </span>
+                          <span className="font-mono text-[10px] text-slate-500 w-3">{idx + 1}</span>
+                          <div className="truncate">
+                            <p className="font-semibold text-slate-200 truncate">{track.title}</p>
+                            <p className="text-[10px] text-slate-400 truncate">{track.artist}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {track.isCustom || track.source === 'upload' || track.source === 'custom_url' ? (
+                            <button
+                              type="button"
+                              onClick={() => removeMusicInDrawer(track.id)}
+                              className="p-1 text-slate-500 hover:text-rose-400 transition"
+                              title="Remove custom track"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          ) : (
+                            <span className="text-[9px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded uppercase font-mono">
+                              {track.source || 'preset'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Ambient Sound Queue Section */}
+              <div className="border-t border-slate-800 pt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 text-amber-300">
+                      <Layers className="w-3.5 h-3.5" /> Ambient Sound Layers
+                    </h3>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Drag ⠿ to reorder soundscapes
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAudioUploadCategory('ambient');
+                        setIsAudioUploadModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Upload Ambient</span>
+                    </button>
+                    <span className="text-[10px] text-amber-400">
+                      {currentAmbientList.filter((t) => t.active).length} Active
+                    </span>
+                  </div>
+                </div>
+
+                {/* Current Active Queue with Drag Reordering */}
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
                   {currentAmbientList.length === 0 ? (
                     <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 text-center text-xs text-slate-400">
                       No ambient tracks added yet. Select from below to layer your atmosphere.
                     </div>
                   ) : (
-                    currentAmbientList.map((track) => (
-                      <div
-                        key={track.id}
-                        className={`p-2.5 rounded-xl border flex items-center justify-between transition ${
-                          track.active
-                            ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
-                            : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                        }`}
-                      >
-                        <button
-                          onClick={() => toggleAmbient(track)}
-                          className="text-left flex-1 font-semibold text-xs flex items-center gap-2"
-                        >
-                          <Volume2 className="w-3.5 h-3.5" />
-                          <span>{track.name}</span>
-                          <span
-                            className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                              track.active ? 'bg-amber-400/20 text-amber-300' : 'bg-slate-800 text-slate-500'
-                            }`}
-                          >
-                            {track.active ? 'Active' : 'Muted'}
-                          </span>
-                        </button>
+                    currentAmbientList.map((track, idx) => {
+                      const isDraggingThis = draggedAmbientIdx === idx;
+                      const isOverThis = dragOverAmbientIdx === idx;
 
-                        <button
-                          onClick={() => removeAmbient(track.id)}
-                          className="p-1 text-slate-500 hover:text-rose-400 transition"
-                          title="Remove from queue"
+                      return (
+                        <div
+                          key={track.id || `ambient-cfg-${idx}`}
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggedAmbientIdx(idx);
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            if (dragOverAmbientIdx !== idx) setDragOverAmbientIdx(idx);
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverAmbientIdx === idx) setDragOverAmbientIdx(null);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (draggedAmbientIdx !== null && draggedAmbientIdx !== idx) {
+                              moveAmbientInDrawer(draggedAmbientIdx, idx);
+                            }
+                            setDraggedAmbientIdx(null);
+                            setDragOverAmbientIdx(null);
+                          }}
+                          onDragEnd={() => {
+                            setDraggedAmbientIdx(null);
+                            setDragOverAmbientIdx(null);
+                          }}
+                          className={`p-2.5 rounded-xl border flex items-center justify-between transition group ${
+                            isDraggingThis
+                              ? 'opacity-40 border-dashed border-amber-400 bg-amber-950/20'
+                              : isOverThis
+                              ? 'border-amber-400 bg-amber-500/20'
+                              : track.active
+                              ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+                              : 'bg-slate-950/60 border-slate-800 text-slate-400'
+                          }`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <span
+                              className="cursor-grab active:cursor-grabbing p-0.5 text-slate-500 hover:text-amber-300"
+                              title="Drag to reorder"
+                            >
+                              <GripVertical className="w-3.5 h-3.5" />
+                            </span>
+
+                            <button
+                              onClick={() => toggleAmbient(track)}
+                              className="text-left font-semibold text-xs flex items-center gap-2 truncate flex-1"
+                            >
+                              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">{track.name}</span>
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${
+                                  track.active ? 'bg-amber-400/20 text-amber-300' : 'bg-slate-800 text-slate-500'
+                                }`}
+                              >
+                                {track.active ? 'Active' : 'Muted'}
+                              </span>
+                            </button>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() => removeAmbient(track.id)}
+                              className="p-1 text-slate-500 hover:text-rose-400 transition"
+                              title="Remove from queue"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
 
@@ -1313,30 +1544,6 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                       );
                     })}
                   </div>
-                </div>
-              </div>
-
-              {/* Music Queue Section */}
-              <div className="border-t border-slate-800 pt-4">
-                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider mb-3 flex items-center justify-between">
-                  <span>Music Tracks</span>
-                  <span className="text-[10px] text-indigo-400 font-normal">{PRESET_MUSIC_TRACKS.length} available</span>
-                </h3>
-                <div className="space-y-2">
-                  {PRESET_MUSIC_TRACKS.map((track) => (
-                    <div
-                      key={track.id}
-                      className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between text-xs"
-                    >
-                      <div>
-                        <p className="font-semibold text-slate-200">{track.title}</p>
-                        <p className="text-[10px] text-slate-400">{track.artist}</p>
-                      </div>
-                      <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full uppercase">
-                        {track.source}
-                      </span>
-                    </div>
-                  ))}
                 </div>
               </div>
 
@@ -2390,6 +2597,42 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
         </div>
 
       </div>
+
+      {/* Audio Upload / Import Modal */}
+      <AudioUploadModal
+        isOpen={isAudioUploadModalOpen}
+        onClose={() => setIsAudioUploadModalOpen(false)}
+        defaultCategory={audioUploadCategory}
+        onAddMusicTrack={(newTrack) => {
+          const currentMusicList = config.audio?.musicPlaylist?.tracks || PRESET_MUSIC_TRACKS;
+          const updated = [newTrack, ...currentMusicList];
+          onChangeConfig({
+            ...config,
+            audio: {
+              ...config.audio,
+              musicPlaylist: {
+                tracks: updated,
+                shuffleEnabled: config.audio?.musicPlaylist?.shuffleEnabled ?? false,
+              },
+            },
+          });
+        }}
+        onAddAmbientTrack={(newTrack) => {
+          const currentAmbientList = config.audio?.ambientPlaylist?.tracks || config.audio?.ambientTracks || [];
+          const updated = [newTrack, ...currentAmbientList];
+          onChangeConfig({
+            ...config,
+            audio: {
+              ...config.audio,
+              ambientTracks: updated,
+              ambientPlaylist: {
+                tracks: updated,
+                shuffleEnabled: config.audio?.ambientPlaylist?.shuffleEnabled ?? false,
+              },
+            },
+          });
+        }}
+      />
     </div>
   );
 };
