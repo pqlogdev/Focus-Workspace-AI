@@ -1,12 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Task } from '../types';
-import { CheckCircle2, Circle, Plus, Trash2, CheckSquare, X, GripHorizontal, RotateCcw } from 'lucide-react';
+import {
+  CheckSquare,
+  Plus,
+  Trash2,
+  CheckCircle2,
+  Circle,
+  GripHorizontal,
+  X,
+  Sparkles,
+  Zap,
+  Filter,
+  CheckCheck,
+} from 'lucide-react';
+import { audioSynth } from '../utils/audioSynth';
 
 interface TaskPlannerSidebarProps {
   tasks: Task[];
   onChangeTasks: (tasks: Task[]) => void;
   isOpen: boolean;
   onClose: () => void;
+  onOpenSoundGenerator?: () => void;
 }
 
 export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
@@ -14,8 +28,13 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
   onChangeTasks,
   isOpen,
   onClose,
+  onOpenSoundGenerator,
 }) => {
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [taskFilter, setTaskFilter] = useState<'all' | 'active' | 'done'>('all');
+  const [selectedPriority, setSelectedPriority] = useState<'low' | 'medium' | 'high'>('medium');
+
+  // Position state for floating draggable panel
   const [position, setPosition] = useState<{ x: number; y: number } | null>(() => {
     const saved = localStorage.getItem('airiser_tasks_position');
     if (saved) {
@@ -35,9 +54,11 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
     }
     return null;
   });
+
   const [isDragging, setIsDragging] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
+  // Drag tracking ref (60fps rAF)
   const dragRef = useRef<{
     startX: number;
     startY: number;
@@ -142,7 +163,6 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
     const deltaX = e.clientX - startX;
     const deltaY = e.clientY - startY;
 
-    // Allow dragging freely anywhere, right up into the header area (min top 0px)
     const nextX = Math.max(0, Math.min(window.innerWidth - width, initX + deltaX));
     const nextY = Math.max(0, Math.min(window.innerHeight - 60, initY + deltaY));
 
@@ -166,7 +186,6 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
         cancelAnimationFrame(dragRef.current.rafId);
         dragRef.current.rafId = null;
       }
-      // If dropped near header top zone (y < 45), snap flush into header row at y=12
       const finalY = dragRef.current.pendingY < 45 ? 12 : dragRef.current.pendingY;
       setPosition({
         x: dragRef.current.pendingX,
@@ -189,6 +208,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
       id: `task-${Date.now()}`,
       title: newTaskTitle.trim(),
       completed: false,
+      priority: selectedPriority,
       createdAt: new Date().toISOString(),
     };
 
@@ -197,17 +217,46 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
   };
 
   const toggleTask = (id: string) => {
-    onChangeTasks(
-      tasks.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
-    );
+    const targetTask = tasks.find((t) => t.id === id);
+    const willBeCompleted = targetTask ? !targetTask.completed : false;
+
+    if (willBeCompleted) {
+      try {
+        audioSynth.playChime('modern');
+      } catch {}
+    }
+
+    const updated = tasks.map((t) => {
+      if (t.id === id) {
+        const completed = !t.completed;
+        return {
+          ...t,
+          completed,
+          completedAt: completed ? new Date().toISOString() : undefined,
+        };
+      }
+      return t;
+    });
+
+    onChangeTasks(updated);
   };
 
   const deleteTask = (id: string) => {
     onChangeTasks(tasks.filter((t) => t.id !== id));
   };
 
+  const clearCompletedTasks = () => {
+    onChangeTasks(tasks.filter((t) => !t.completed));
+  };
+
   const completedCount = tasks.filter((t) => t.completed).length;
   const progressPercent = tasks.length > 0 ? (completedCount / tasks.length) * 100 : 0;
+
+  const filteredTasks = tasks.filter((t) => {
+    if (taskFilter === 'active') return !t.completed;
+    if (taskFilter === 'done') return t.completed;
+    return true;
+  });
 
   return (
     <div
@@ -230,7 +279,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
               zIndex: isDragging ? 100 : 45,
             }
       }
-      className={`w-80 bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-5 shadow-2xl text-slate-100 flex flex-col max-h-[80vh] transition-[box-shadow,opacity] duration-150 select-none ${
+      className={`w-84 bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-5 shadow-2xl text-slate-100 flex flex-col max-h-[82vh] transition-[box-shadow,opacity] duration-150 select-none ${
         isDragging ? 'cursor-grabbing opacity-90 scale-[1.01] shadow-2xl ring-2 ring-emerald-500/30' : ''
       }`}
     >
@@ -241,43 +290,43 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={() => {
-          // Double-click title bar to toggle dock to header
-          if (position?.y === 12) {
+          if (position) {
             setPosition(null);
             localStorage.removeItem('airiser_tasks_position');
-          } else {
-            setPosition({ x: position?.x ?? 24, y: 12 });
           }
         }}
-        className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3 cursor-grab active:cursor-grabbing select-none"
-        title="Drag anywhere (including header area) • Double-click to dock to header"
+        className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3 cursor-grab active:cursor-grabbing select-none"
+        title="Drag task panel anywhere • Double-click to reset"
       >
-        <div className="flex items-center gap-2 text-emerald-400">
-          <GripHorizontal className="w-4 h-4 text-slate-500 group-hover:text-emerald-400" />
-          <CheckSquare className="w-4 h-4" />
-          <h3 className="font-bold text-sm text-slate-100">Tasks</h3>
-          {position && position.y <= 20 && (
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-full font-medium">
-              Header
+        <div className="flex items-center gap-2">
+          <GripHorizontal className="w-4 h-4 text-slate-500 hover:text-emerald-400 transition-colors" />
+          <div className="flex items-center gap-1.5 text-emerald-400">
+            <CheckSquare className="w-4 h-4" />
+            <h3 className="font-bold text-sm text-slate-100">Tasks</h3>
+          </div>
+          {tasks.length > 0 && (
+            <span className="text-[10px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">
+              {completedCount}/{tasks.length}
             </span>
           )}
         </div>
+
         <div className="flex items-center gap-1">
-          {position && (
+          {onOpenSoundGenerator && (
             <button
-              onClick={() => {
-                setPosition(null);
-                localStorage.removeItem('airiser_tasks_position');
-              }}
-              className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
-              title="Reset task panel position"
+              type="button"
+              onClick={onOpenSoundGenerator}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-indigo-400 hover:text-indigo-200 transition"
+              title="Generate Ambient Soundscape for Tasks"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
+              <Sparkles className="w-4 h-4 animate-pulse" />
             </button>
           )}
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+            className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+            title="Close Tasks"
           >
             <X className="w-4 h-4" />
           </button>
@@ -285,70 +334,122 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
       </div>
 
       {/* Completion Progress Bar */}
-      <div className="mb-4">
+      <div className="mb-3">
         <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
           <span>{completedCount} of {tasks.length} Completed</span>
-          <span>{Math.round(progressPercent)}%</span>
+          <span className="font-mono text-emerald-400">{Math.round(progressPercent)}%</span>
         </div>
         <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-emerald-400 transition-all duration-300"
+            className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-300 rounded-full"
             style={{ width: `${progressPercent}%` }}
           />
         </div>
       </div>
 
-      {/* Add Task Input */}
-      <form onSubmit={handleAddTask} className="flex gap-2 mb-4">
+      {/* Filter Tabs & Quick Actions */}
+      <div className="flex items-center justify-between gap-1 mb-3 text-[11px]">
+        <div className="flex items-center bg-slate-950/60 p-0.5 rounded-xl border border-slate-800/80">
+          {(['all', 'active', 'done'] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setTaskFilter(f)}
+              className={`px-2 py-0.5 rounded-lg capitalize transition font-medium ${
+                taskFilter === f ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+
+        {completedCount > 0 && (
+          <button
+            type="button"
+            onClick={clearCompletedTasks}
+            className="text-slate-500 hover:text-rose-400 transition text-[10px] flex items-center gap-1"
+            title="Remove completed tasks"
+          >
+            <Trash2 className="w-3 h-3" /> Clear Done
+          </button>
+        )}
+      </div>
+
+      {/* Add Task Input Form */}
+      <form onSubmit={handleAddTask} className="flex gap-2 mb-3">
         <input
           type="text"
           value={newTaskTitle}
           onChange={(e) => setNewTaskTitle(e.target.value)}
-          placeholder="Add focus task..."
-          className="flex-1 bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-indigo-500 transition"
+          placeholder="Add focus task (e.g., Complete Chapter 3)..."
+          className="flex-1 bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50 transition"
         />
         <button
           type="submit"
-          className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition flex items-center justify-center"
+          className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition flex items-center justify-center shadow-lg shadow-indigo-950/50 active:scale-95 shrink-0"
+          title="Add Task"
         >
           <Plus className="w-4 h-4" />
         </button>
       </form>
 
-      {/* Task List */}
-      <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-        {tasks.length === 0 ? (
-          <p className="text-center text-xs text-slate-500 py-6">
-            No tasks set for this focus session. Add a task above to stay on track!
-          </p>
+      {/* Task List (Real-time updates) */}
+      <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar min-h-[140px]">
+        {filteredTasks.length === 0 ? (
+          <div className="text-center text-xs text-slate-500 py-8 px-2">
+            {taskFilter === 'done' ? (
+              <p>No completed tasks yet. Keep focusing!</p>
+            ) : taskFilter === 'active' ? (
+              <p>All tasks completed! Great work.</p>
+            ) : (
+              <p>No tasks set for this session. Add a task above to stay on track!</p>
+            )}
+          </div>
         ) : (
-          tasks.map((task) => (
+          filteredTasks.map((task) => (
             <div
               key={task.id}
-              className={`flex items-center justify-between p-2.5 rounded-xl border transition ${
+              className={`group flex items-center justify-between p-2.5 rounded-xl border transition ${
                 task.completed
-                  ? 'bg-slate-950/30 border-slate-800/50 text-slate-500 line-through'
-                  : 'bg-slate-800/40 border-slate-800 text-slate-200 hover:bg-slate-800/70'
+                  ? 'bg-slate-950/40 border-slate-800/40 text-slate-500'
+                  : 'bg-slate-800/40 border-slate-800 text-slate-200 hover:bg-slate-800/70 hover:border-slate-700'
               }`}
             >
               <button
+                type="button"
                 onClick={() => toggleTask(task.id)}
-                className="flex items-center gap-2.5 text-xs text-left flex-1"
+                className="flex items-center gap-2.5 text-xs text-left flex-1 min-w-0"
               >
                 {task.completed ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                 ) : (
-                  <Circle className="w-4 h-4 text-slate-400 shrink-0" />
+                  <Circle className="w-4 h-4 text-slate-400 group-hover:text-emerald-400 transition shrink-0" />
                 )}
-                <span className="truncate">{task.title}</span>
+                <span
+                  className={`truncate ${
+                    task.completed ? 'line-through opacity-70 text-slate-400' : 'text-slate-200 font-medium'
+                  }`}
+                >
+                  {task.title}
+                </span>
               </button>
 
-              <button
-                onClick={() => deleteTask(task.id)}
-                className="p-1 text-slate-500 hover:text-rose-400 transition"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {task.completed && (
+                  <span className="text-[9px] font-mono text-emerald-400/80 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                    Synced
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => deleteTask(task.id)}
+                  className="p-1 text-slate-500 hover:text-rose-400 transition opacity-0 group-hover:opacity-100"
+                  title="Delete task"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
           ))
         )}

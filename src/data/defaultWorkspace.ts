@@ -40,6 +40,9 @@ export const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
     longBreakDuration: 900, // 15 min
     cyclesBeforeLongBreak: 4,
     totalCycles: null,
+    autoPauseOnTabSwitch: true,
+    autoPauseOnIdle: true,
+    idleTimeoutMinutes: 5,
     stateLabels: {
       focus: 'Deep Focus',
       break: 'Refresh Break',
@@ -75,6 +78,9 @@ export const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
     showStickyNotes: true,
     showStreakBadge: true,
     minimalMode: false,
+    autoPauseOnTabSwitch: true,
+    autoPauseOnIdle: true,
+    idleTimeoutMinutes: 5,
   },
   viewMode: 'fullscreen',
 };

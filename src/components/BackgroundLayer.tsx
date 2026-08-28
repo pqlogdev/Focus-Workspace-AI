@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { BackgroundConfig, MediaItem, TimerStatus, WorkspaceAppearanceConfig } from '../types';
 
 interface BackgroundLayerProps {
@@ -7,6 +7,8 @@ interface BackgroundLayerProps {
   appearance?: WorkspaceAppearanceConfig;
   timerStatus: TimerStatus;
 }
+
+const DEFAULT_FALLBACK_URL = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1920&q=80';
 
 export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
   backgroundConfig,
@@ -32,18 +34,86 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [nextIndex, setNextIndex] = useState(1);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [resolvedUrls, setResolvedUrls] = useState<Record<string, string>>({
+    'https://photos.app.goo.gl/AAVkdPZWQFaP8PRUA': 'https://lh3.googleusercontent.com/pw/AP1GczM5H0E3L1CW4IGLZfYuOWxBpUqox7SNzq5ZNgQGOENz7z_5sWDAGlV7P7ZG3RHD6el3trwJEHZVKu7w-SeYdqylqIOo6xCvXpUkFdl7GKR87JDn_Es=w2560-h1440-no',
+  });
+  const [proxyFallbackUrls, setProxyFallbackUrls] = useState<Set<string>>(new Set());
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fallback item if no items configured
-  const currentItem: MediaItem = activeItems[currentIndex] || {
+  const currentItem: MediaItem = activeItems[currentIndex] || activeItems[0] || {
     id: 'default',
     title: 'Rainy Studio',
     type: 'image',
-    url: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1920&q=80',
+    url: DEFAULT_FALLBACK_URL,
     duration: 1800,
   };
 
   const nextItem: MediaItem | undefined = activeItems.length > 1 ? activeItems[nextIndex] : undefined;
+
+  // Resolve external or shared URLs (Google Photos, Google Drive, Dropbox, etc.)
+  const resolveUrlIfNeeded = useCallback(async (rawUrl: string) => {
+    if (!rawUrl) return;
+    if (resolvedUrls[rawUrl]) return;
+
+    // Check if it's a shared link needing server resolution
+    const isSpecialLink =
+      rawUrl.includes('photos.app.goo.gl') ||
+      rawUrl.includes('photos.google.com') ||
+      rawUrl.includes('drive.google.com') ||
+      rawUrl.includes('dropbox.com');
+
+    if (isSpecialLink) {
+      try {
+        const res = await fetch('/api/media/resolve-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: rawUrl }),
+        });
+        const data = await res.json();
+        if (data && data.directUrl) {
+          setResolvedUrls((prev) => ({ ...prev, [rawUrl]: data.directUrl }));
+        }
+      } catch (err) {
+        console.warn('Could not auto-resolve special URL:', rawUrl, err);
+      }
+    }
+  }, [resolvedUrls]);
+
+  // Synchronize index and auto-resolve whenever active items change
+  useEffect(() => {
+    setCurrentIndex(0);
+    setNextIndex(activeItems.length > 1 ? 1 : 0);
+
+    if (currentItem?.url) {
+      resolveUrlIfNeeded(currentItem.url);
+    }
+    if (nextItem?.url) {
+      resolveUrlIfNeeded(nextItem.url);
+    }
+  }, [activeItems[0]?.id, activeItems[0]?.url, activeItems.length, isBreak, resolveUrlIfNeeded]);
+
+  const getMediaRenderUrl = (rawUrl: string) => {
+    if (!rawUrl) return DEFAULT_FALLBACK_URL;
+
+    // 1. Check resolved URLs map (for Google Photos / Drive)
+    const directUrl = resolvedUrls[rawUrl] || rawUrl;
+
+    // 2. If it previously failed direct loading in browser, route via proxy
+    if (proxyFallbackUrls.has(directUrl) && (directUrl.startsWith('http://') || directUrl.startsWith('https://'))) {
+      return `/api/media/proxy?url=${encodeURIComponent(directUrl)}`;
+    }
+
+    return directUrl;
+  };
+
+  const handleMediaError = (rawUrl: string) => {
+    const directUrl = resolvedUrls[rawUrl] || rawUrl;
+    if (!proxyFallbackUrls.has(directUrl)) {
+      // First try proxying
+      setProxyFallbackUrls((prev) => new Set([...prev, directUrl]));
+    }
+  };
 
   // Auto-advance playlist items based on duration
   useEffect(() => {
@@ -58,7 +128,7 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [currentIndex, activeItems, bgConfig.mode]);
+  }, [currentIndex, activeItems, bgConfig.mode, currentItem.duration]);
 
   const triggerAdvance = () => {
     if (activeItems.length <= 1) return;
@@ -74,14 +144,8 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
       setCurrentIndex(targetNext);
       setNextIndex((targetNext + 1) % activeItems.length);
       setIsTransitioning(false);
-    }, 1000); // 1s transition duration
+    }, 1000);
   };
-
-  // Reset index when active items change (e.g. work vs break)
-  useEffect(() => {
-    setCurrentIndex(0);
-    setNextIndex(activeItems.length > 1 ? 1 : 0);
-  }, [isBreak]);
 
   const getTransitionClass = () => {
     const effect = bgConfig.transition?.effect || 'crossfade';
@@ -94,7 +158,6 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
     if (effect === 'cut') {
       return 'opacity-100';
     }
-    // crossfade
     return isTransitioning ? 'opacity-0' : 'opacity-100';
   };
 
@@ -108,14 +171,16 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
     if (vignetteTint === 'none') {
       return 'bg-slate-950/20';
     }
-    // 'dark' default
     return 'bg-gradient-to-t from-slate-950/80 via-slate-950/25 to-slate-950/45';
   };
 
   const mediaStyle: React.CSSProperties = {
     filter: `brightness(${brightness}) contrast(1.05) blur(${blurAmount}px)`,
-    transform: blurAmount > 0 ? 'scale(1.04)' : undefined, // prevent white edges when blurred
+    transform: blurAmount > 0 ? 'scale(1.04)' : undefined,
   };
+
+  const currentRenderUrl = getMediaRenderUrl(currentItem.url);
+  const nextRenderUrl = nextItem ? getMediaRenderUrl(nextItem.url) : '';
 
   return (
     <div className="fixed inset-0 z-0 overflow-hidden bg-slate-950 pointer-events-none select-none">
@@ -123,18 +188,23 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
       <div className={`absolute inset-0 transition-all duration-1000 ease-in-out ${getTransitionClass()}`}>
         {currentItem.type === 'video' ? (
           <video
-            src={currentItem.url}
+            key={currentRenderUrl}
+            src={currentRenderUrl}
             autoPlay
             loop
             muted
             playsInline
+            onError={() => handleMediaError(currentItem.url)}
             style={mediaStyle}
             className="w-full h-full object-cover transition-all duration-300"
           />
         ) : (
           <img
-            src={currentItem.url}
-            alt={currentItem.title}
+            key={currentRenderUrl}
+            src={currentRenderUrl}
+            alt={currentItem.title || 'Workspace Background'}
+            referrerPolicy="no-referrer"
+            onError={() => handleMediaError(currentItem.url)}
             style={mediaStyle}
             className="w-full h-full object-cover transition-all duration-300"
           />
@@ -146,18 +216,23 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
         <div className="absolute inset-0 transition-opacity duration-1000 opacity-100">
           {nextItem.type === 'video' ? (
             <video
-              src={nextItem.url}
+              key={nextRenderUrl}
+              src={nextRenderUrl}
               autoPlay
               loop
               muted
               playsInline
+              onError={() => handleMediaError(nextItem.url)}
               style={mediaStyle}
               className="w-full h-full object-cover"
             />
           ) : (
             <img
-              src={nextItem.url}
-              alt={nextItem.title}
+              key={nextRenderUrl}
+              src={nextRenderUrl}
+              alt={nextItem.title || 'Next Background'}
+              referrerPolicy="no-referrer"
+              onError={() => handleMediaError(nextItem.url)}
               style={mediaStyle}
               className="w-full h-full object-cover"
             />
@@ -187,3 +262,4 @@ export const BackgroundLayer: React.FC<BackgroundLayerProps> = ({
     </div>
   );
 };
+

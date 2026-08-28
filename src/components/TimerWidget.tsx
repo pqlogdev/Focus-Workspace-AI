@@ -19,6 +19,7 @@ import {
   Pause,
   RotateCcw,
   SkipForward,
+  Maximize,
   Maximize2,
   Minimize2,
   EyeOff,
@@ -33,7 +34,13 @@ import {
   Sliders,
   Radio,
   Layers,
-  ChevronDown
+  ChevronDown,
+  ShieldCheck,
+  ShieldAlert,
+  Clock,
+  X,
+  Activity,
+  AlertCircle
 } from 'lucide-react';
 
 interface TimerWidgetProps {
@@ -43,6 +50,7 @@ interface TimerWidgetProps {
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
   onCompleteCycle: () => void;
+  onAccrueFocusTime?: (seconds: number) => void;
   onOpenMethodCustomizer: () => void;
   appearance?: WorkspaceAppearanceConfig;
   onUpdateAppearance?: (changes: Partial<WorkspaceAppearanceConfig>) => void;
@@ -56,6 +64,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   viewMode,
   onViewModeChange,
   onCompleteCycle,
+  onAccrueFocusTime,
   onOpenMethodCustomizer,
   appearance,
   onUpdateAppearance,
@@ -63,13 +72,74 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
 }) => {
   const isFlowtime = methodConfig.type === 'flowtime';
 
-  const [remainingSeconds, setRemainingSeconds] = useState(
-    isFlowtime ? 0 : methodConfig.workDuration
-  );
-  const [isRunning, setIsRunning] = useState(false);
-  const [currentCycle, setCurrentCycle] = useState(1);
+  const [remainingSeconds, setRemainingSeconds] = useState<number>(() => {
+    const saved = localStorage.getItem('airiser_timer_remaining_seconds');
+    if (saved !== null) {
+      const val = parseInt(saved, 10);
+      if (!isNaN(val) && val >= 0) return val;
+    }
+    return isFlowtime ? 0 : methodConfig.workDuration;
+  });
+  const [isRunning, setIsRunning] = useState<boolean>(() => {
+    return localStorage.getItem('airiser_timer_is_running') === 'true';
+  });
+  const [currentCycle, setCurrentCycle] = useState<number>(() => {
+    const saved = localStorage.getItem('airiser_timer_cycle');
+    if (saved !== null) {
+      const val = parseInt(saved, 10);
+      if (!isNaN(val) && val >= 1) return val;
+    }
+    return 1;
+  });
   const [isQuickHidden, setIsQuickHidden] = useState(false);
   const [showQuickStyleMenu, setShowQuickStyleMenu] = useState(false);
+  const [showAutoPauseSettings, setShowAutoPauseSettings] = useState(false);
+
+  // Auto-Pause Configuration
+  const autoPauseOnTabSwitch =
+    appearance?.autoPauseOnTabSwitch ?? methodConfig.autoPauseOnTabSwitch ?? true;
+  const autoPauseOnIdle =
+    appearance?.autoPauseOnIdle ?? methodConfig.autoPauseOnIdle ?? true;
+  const idleTimeoutMinutes =
+    appearance?.idleTimeoutMinutes ?? methodConfig.idleTimeoutMinutes ?? 5;
+
+  // Auto-pause notification state
+  const [autoPauseNotice, setAutoPauseNotice] = useState<{
+    reason: 'tab_switch' | 'idle';
+    timestamp: number;
+    message: string;
+    details: string;
+  } | null>(null);
+
+  // Activity tracking and state synchronization refs
+  const isRunningRef = useRef(isRunning);
+  const statusRef = useRef(status);
+  const lastActivityRef = useRef<number>(Date.now());
+  const autoPauseTabRef = useRef(autoPauseOnTabSwitch);
+  const autoPauseIdleRef = useRef(autoPauseOnIdle);
+  const idleTimeoutRef = useRef(idleTimeoutMinutes);
+
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+    localStorage.setItem('airiser_timer_is_running', isRunning.toString());
+    localStorage.setItem('airiser_timer_last_timestamp', Date.now().toString());
+  }, [isRunning]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    autoPauseTabRef.current = autoPauseOnTabSwitch;
+  }, [autoPauseOnTabSwitch]);
+
+  useEffect(() => {
+    autoPauseIdleRef.current = autoPauseOnIdle;
+  }, [autoPauseOnIdle]);
+
+  useEffect(() => {
+    idleTimeoutRef.current = idleTimeoutMinutes;
+  }, [idleTimeoutMinutes]);
 
   // Position state for draggable timer
   const [position, setPosition] = useState<{ x: number; y: number } | null>(() => {
@@ -130,19 +200,21 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
 
   const resizeRef = useRef<{
     startX: number;
+    startY: number;
     initWidth: number;
-    direction: 'se' | 'sw';
+    direction: 'se' | 'sw' | 'ne' | 'nw';
     rafId: number | null;
     pendingWidth: number;
   }>({
     startX: 0,
+    startY: 0,
     initWidth: 420,
     direction: 'se',
     rafId: null,
     pendingWidth: 420,
   });
 
-  // Save position & size to localStorage
+  // Save position, size, countdown and cycle to localStorage
   useEffect(() => {
     if (position) {
       localStorage.setItem('airiser_timer_position', JSON.stringify(position));
@@ -159,18 +231,42 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     }
   }, [customWidth]);
 
-  // Clean up any pending animation frame on unmount
+  useEffect(() => {
+    localStorage.setItem('airiser_timer_remaining_seconds', remainingSeconds.toString());
+  }, [remainingSeconds]);
+
+  useEffect(() => {
+    localStorage.setItem('airiser_timer_cycle', currentCycle.toString());
+  }, [currentCycle]);
+
+  // Clean up any pending animation frame on unmount & listen for expand/reset events
+  const handleExpandFullTimer = () => {
+    setIsQuickHidden(false);
+    setPosition(null);
+    setCustomWidth(null);
+    localStorage.removeItem('airiser_timer_position');
+    localStorage.removeItem('airiser_timer_custom_width');
+    if (onUpdateAppearance) {
+      onUpdateAppearance({
+        clockStyle: 'digital',
+        timerSize: 'normal',
+        timerTransparentGhost: false,
+      });
+    }
+  };
+
   useEffect(() => {
     const handleResetAll = () => {
-      setPosition(null);
-      setCustomWidth(null);
-      localStorage.removeItem('airiser_timer_position');
-      localStorage.removeItem('airiser_timer_custom_width');
+      handleExpandFullTimer();
     };
 
     window.addEventListener('reset-all-positions', handleResetAll);
+    window.addEventListener('reset-timer-position', handleResetAll);
+    window.addEventListener('expand-timer', handleResetAll);
     return () => {
       window.removeEventListener('reset-all-positions', handleResetAll);
+      window.removeEventListener('reset-timer-position', handleResetAll);
+      window.removeEventListener('expand-timer', handleResetAll);
       if (dragRef.current.rafId !== null) {
         cancelAnimationFrame(dragRef.current.rafId);
       }
@@ -178,7 +274,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
         cancelAnimationFrame(resizeRef.current.rafId);
       }
     };
-  }, []);
+  }, [onUpdateAppearance]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (
@@ -251,7 +347,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   // Timer Corner Resize Pointer Handlers
   const handleResizePointerDown = (
     e: React.PointerEvent<HTMLDivElement>,
-    direction: 'se' | 'sw' = 'se'
+    direction: 'se' | 'sw' | 'ne' | 'nw' = 'se'
   ) => {
     e.preventDefault();
     e.stopPropagation();
@@ -261,6 +357,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
 
     resizeRef.current = {
       startX: e.clientX,
+      startY: e.clientY,
       initWidth: rect.width || effectiveWidth,
       direction,
       rafId: null,
@@ -283,12 +380,12 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     const minW = 260;
     const maxW = Math.min(1000, window.innerWidth - 30);
 
-    // Expand symmetrically or unidirectionally
+    // Expand symmetrically (if centered) or unidirectionally (if positioned/docked)
     const scaleFactor = position ? 1 : 2;
     let nextWidth = initWidth;
-    if (direction === 'se') {
+    if (direction === 'se' || direction === 'ne') {
       nextWidth = Math.max(minW, Math.min(maxW, initWidth + deltaX * scaleFactor));
-    } else if (direction === 'sw') {
+    } else if (direction === 'sw' || direction === 'nw') {
       nextWidth = Math.max(minW, Math.min(maxW, initWidth - deltaX * scaleFactor));
     }
 
@@ -317,23 +414,101 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     }
   };
 
-  // Sync state changes with durations
+  // Track previous status and config to prevent initial mount from clobbering restored remainingSeconds
+  const prevStatusRef = useRef(status);
+  const prevMethodConfigRef = useRef(methodConfig);
+  const isInitialMount = useRef(true);
+
+  // 1. Recover elapsed time if page was refreshed / reloaded while running
   useEffect(() => {
-    if (!isFlowtime) {
-      if (status === 'FOCUS') {
-        setRemainingSeconds(methodConfig.workDuration);
-      } else if (status === 'BREAK') {
-        setRemainingSeconds(methodConfig.breakDuration);
-      } else if (status === 'LONG_BREAK') {
-        setRemainingSeconds(methodConfig.longBreakDuration);
+    const wasRunning = localStorage.getItem('airiser_timer_is_running') === 'true';
+    const lastTimestampStr = localStorage.getItem('airiser_timer_last_timestamp');
+
+    if (wasRunning && lastTimestampStr) {
+      const lastTimestamp = parseInt(lastTimestampStr, 10);
+      if (!isNaN(lastTimestamp) && lastTimestamp > 0) {
+        const now = Date.now();
+        const elapsedSec = Math.floor((now - lastTimestamp) / 1000);
+
+        // If refresh happened while running, credit elapsed focus time and adjust timer
+        if (elapsedSec > 0 && elapsedSec < 43200) {
+          if (status === 'FOCUS') {
+            if (isFlowtime) {
+              setRemainingSeconds((prev) => prev + elapsedSec);
+              onAccrueFocusTime?.(elapsedSec);
+            } else {
+              setRemainingSeconds((prev) => {
+                if (elapsedSec >= prev) {
+                  onAccrueFocusTime?.(prev);
+                  setTimeout(() => handleCycleComplete(), 100);
+                  return 0;
+                } else {
+                  onAccrueFocusTime?.(elapsedSec);
+                  return prev - elapsedSec;
+                }
+              });
+            }
+          } else if (status === 'BREAK' || status === 'LONG_BREAK') {
+            setRemainingSeconds((prev) => Math.max(0, prev - elapsedSec));
+          }
+        }
+      }
+    }
+    localStorage.setItem('airiser_timer_last_timestamp', Date.now().toString());
+
+    const handleBeforeUnload = () => {
+      localStorage.setItem('airiser_timer_is_running', isRunningRef.current.toString());
+      localStorage.setItem('airiser_timer_last_timestamp', Date.now().toString());
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  // 2. Sync state changes with durations ONLY on genuine state/config change (not on mount)
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      prevStatusRef.current = status;
+      prevMethodConfigRef.current = methodConfig;
+      return;
+    }
+
+    const statusChanged = prevStatusRef.current !== status;
+    const configDurationChanged =
+      prevMethodConfigRef.current.workDuration !== methodConfig.workDuration ||
+      prevMethodConfigRef.current.breakDuration !== methodConfig.breakDuration ||
+      prevMethodConfigRef.current.longBreakDuration !== methodConfig.longBreakDuration ||
+      prevMethodConfigRef.current.type !== methodConfig.type;
+
+    prevStatusRef.current = status;
+    prevMethodConfigRef.current = methodConfig;
+
+    if (statusChanged || configDurationChanged) {
+      if (!isFlowtime) {
+        if (status === 'FOCUS') {
+          setRemainingSeconds(methodConfig.workDuration);
+        } else if (status === 'BREAK') {
+          setRemainingSeconds(methodConfig.breakDuration);
+        } else if (status === 'LONG_BREAK') {
+          setRemainingSeconds(methodConfig.longBreakDuration);
+        }
+      } else if (status === 'FOCUS' && statusChanged) {
+        setRemainingSeconds(0);
       }
     }
   }, [status, methodConfig, isFlowtime]);
 
-  // Main countdown / countup tick loop
+  // Main countdown / countup tick loop with real-time focus accrual
   useEffect(() => {
     if (isRunning) {
+      localStorage.setItem('airiser_timer_last_timestamp', Date.now().toString());
       timerRef.current = setInterval(() => {
+        localStorage.setItem('airiser_timer_last_timestamp', Date.now().toString());
+
+        if (status === 'FOCUS') {
+          onAccrueFocusTime?.(1);
+        }
+
         setRemainingSeconds((prev) => {
           if (isFlowtime && status === 'FOCUS') {
             return prev + 1; // Stopwatch mode
@@ -353,7 +528,81 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isRunning, status, currentCycle, isFlowtime]);
+  }, [isRunning, status, currentCycle, isFlowtime, onAccrueFocusTime]);
+
+  // 1. Auto-pause when switching browser tabs (document hidden)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (isRunningRef.current && autoPauseTabRef.current) {
+          setIsRunning(false);
+          setAutoPauseNotice({
+            reason: 'tab_switch',
+            timestamp: Date.now(),
+            message: 'Auto-paused on tab switch',
+            details: 'Session paused while you were in another tab to keep focus metrics accurate.',
+          });
+          try {
+            audioSynth.playClick('switch');
+          } catch (e) {}
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // 2. Auto-pause on idle inactivity (> 5 minutes or configured limit)
+  useEffect(() => {
+    const activityEvents = [
+      'mousemove',
+      'mousedown',
+      'keydown',
+      'touchstart',
+      'scroll',
+      'wheel',
+      'pointerdown',
+    ];
+
+    const handleUserActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+
+    activityEvents.forEach((evt) => {
+      window.addEventListener(evt, handleUserActivity, { passive: true });
+    });
+
+    const idleInterval = setInterval(() => {
+      if (!isRunningRef.current) return;
+      if (!autoPauseIdleRef.current) return;
+
+      const idleLimitMs = (idleTimeoutRef.current || 5) * 60 * 1000;
+      const elapsedIdle = Date.now() - lastActivityRef.current;
+
+      if (elapsedIdle >= idleLimitMs) {
+        setIsRunning(false);
+        setAutoPauseNotice({
+          reason: 'idle',
+          timestamp: Date.now(),
+          message: `Auto-paused: Idle for >${idleTimeoutRef.current || 5}m`,
+          details: `No mouse or keyboard input detected for ${idleTimeoutRef.current || 5} minutes. Focus session auto-paused to ensure clean logs.`,
+        });
+        try {
+          audioSynth.playClick('switch');
+        } catch (e) {}
+      }
+    }, 1000);
+
+    return () => {
+      activityEvents.forEach((evt) => {
+        window.removeEventListener(evt, handleUserActivity);
+      });
+      clearInterval(idleInterval);
+    };
+  }, []);
 
   // Keyboard Hotkeys Listener
   useEffect(() => {
@@ -379,7 +628,18 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isRunning, status, viewMode]);
 
+  const handleResumeFocus = () => {
+    setAutoPauseNotice(null);
+    lastActivityRef.current = Date.now();
+    if (status === 'PENDING') {
+      onStatusChange('FOCUS');
+    }
+    setIsRunning(true);
+  };
+
   const togglePlayPause = () => {
+    setAutoPauseNotice(null);
+    lastActivityRef.current = Date.now();
     if (status === 'PENDING') {
       onStatusChange('FOCUS');
     }
@@ -387,6 +647,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   };
 
   const handleCycleComplete = () => {
+    setAutoPauseNotice(null);
     setIsRunning(false);
     const chimeChoice = appearance?.chimeSound || 'zen-bell';
 
@@ -407,6 +668,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   };
 
   const skipState = () => {
+    setAutoPauseNotice(null);
     if (status === 'FOCUS') {
       onStatusChange('BREAK');
     } else {
@@ -415,14 +677,28 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   };
 
   const resetTimer = () => {
+    setAutoPauseNotice(null);
     setIsRunning(false);
+    localStorage.setItem('airiser_timer_is_running', 'false');
+    localStorage.setItem('airiser_timer_last_timestamp', Date.now().toString());
+
     if (isFlowtime && status === 'FOCUS') {
       setRemainingSeconds(0);
+      localStorage.setItem('airiser_timer_remaining_seconds', '0');
       return;
     }
-    if (status === 'FOCUS') setRemainingSeconds(methodConfig.workDuration);
-    if (status === 'BREAK') setRemainingSeconds(methodConfig.breakDuration);
-    if (status === 'LONG_BREAK') setRemainingSeconds(methodConfig.longBreakDuration);
+    if (status === 'FOCUS') {
+      setRemainingSeconds(methodConfig.workDuration);
+      localStorage.setItem('airiser_timer_remaining_seconds', methodConfig.workDuration.toString());
+    }
+    if (status === 'BREAK') {
+      setRemainingSeconds(methodConfig.breakDuration);
+      localStorage.setItem('airiser_timer_remaining_seconds', methodConfig.breakDuration.toString());
+    }
+    if (status === 'LONG_BREAK') {
+      setRemainingSeconds(methodConfig.longBreakDuration);
+      localStorage.setItem('airiser_timer_remaining_seconds', methodConfig.longBreakDuration.toString());
+    }
   };
 
   const showSeconds = appearance?.showSeconds ?? true;
@@ -703,16 +979,37 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   // 1. Quick Hidden Pill Mode
   if (isQuickHidden) {
     return (
-      <div className="fixed bottom-6 right-6 z-50 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-full px-4 py-2 shadow-2xl flex items-center gap-3 text-slate-100 animate-in fade-in">
-        <span className={`w-2.5 h-2.5 rounded-full ${accentStyles.dotColor} animate-pulse`} />
+      <div
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleExpandFullTimer();
+        }}
+        className={`fixed bottom-6 left-6 z-[999] pointer-events-auto bg-slate-900/95 hover:bg-slate-900 backdrop-blur-xl border ${
+          autoPauseNotice ? 'border-amber-500/70 shadow-[0_0_20px_rgba(245,158,11,0.3)]' : 'border-indigo-500/50 hover:border-indigo-400'
+        } rounded-full px-4 py-2.5 shadow-2xl flex items-center gap-3 text-slate-100 animate-in fade-in cursor-pointer transition-all hover:scale-105 select-none`}
+        title="Click anywhere to expand full timer (Hotkey: H)"
+      >
+        <span className={`w-2.5 h-2.5 rounded-full ${autoPauseNotice ? 'bg-amber-400' : accentStyles.dotColor} animate-pulse`} />
         <span className={`text-sm font-bold tracking-wider ${fontClass}`}>{formatTime(remainingSeconds)}</span>
         <span className="text-xs text-slate-400 font-medium">{getStatusLabel()}</span>
+        {autoPauseNotice && (
+          <span className="text-[10px] bg-amber-500/30 text-amber-200 px-2 py-0.5 rounded-full font-bold border border-amber-500/40 animate-pulse flex items-center gap-1">
+            <EyeOff className="w-2.5 h-2.5" />
+            Auto-Paused
+          </span>
+        )}
         <button
-          onClick={() => setIsQuickHidden(false)}
-          className="p-1 hover:text-white transition"
-          title="Restore Full Timer (H)"
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleExpandFullTimer();
+          }}
+          className="p-1 bg-indigo-600/40 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded-full transition ml-1 pointer-events-auto"
+          title="Expand Full Timer (H)"
         >
-          <Maximize2 className="w-4 h-4" />
+          <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
     );
@@ -723,6 +1020,12 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     return (
       <div className="fixed inset-0 z-40 flex flex-col items-center justify-center pointer-events-none select-none text-slate-100">
         <div className="bg-slate-950/40 backdrop-blur-xl px-12 py-10 rounded-3xl border border-white/10 text-center pointer-events-auto shadow-2xl">
+          {autoPauseNotice && (
+            <div className="mb-4 px-4 py-1.5 bg-amber-500/20 border border-amber-500/40 rounded-full text-amber-200 text-xs font-semibold flex items-center justify-center gap-2">
+              <EyeOff className="w-3.5 h-3.5 text-amber-400" />
+              <span>{autoPauseNotice.message} (Focus Protected)</span>
+            </div>
+          )}
           <p className="text-xs font-semibold tracking-widest text-slate-400 uppercase mb-3">{getStatusLabel()}</p>
           <h1 className={`text-8xl sm:text-9xl font-black tracking-tight text-white drop-shadow-2xl mb-8 ${fontClass} ${accentStyles.glowClass}`}>
             {formatTime(remainingSeconds)}
@@ -806,257 +1109,197 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
       <div
         onPointerDown={handlePointerDown}
         style={{ touchAction: 'none' }}
-        onDoubleClick={() => {
-          if (position?.y === 12) {
-            setPosition(null);
-            localStorage.removeItem('airiser_timer_position');
-          } else {
-            setPosition({ x: position?.x ?? (window.innerWidth / 2 - 200), y: 12 });
-          }
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          handleExpandFullTimer();
         }}
         className="flex items-center justify-between mb-4 cursor-grab active:cursor-grabbing select-none pb-2.5 border-b border-slate-800/40"
-        title="Drag timer anywhere • Double-click to dock to header"
+        title="Drag timer anywhere • Double-click to center"
       >
         <div className="flex items-center gap-2">
           <span title="Drag Timer" className="flex items-center">
-            <GripHorizontal className="w-4 h-4 text-slate-400 group-hover/timer:text-slate-200 transition-colors" />
+            <GripHorizontal className="w-4 h-4 text-slate-500 hover:text-slate-300 transition-colors" />
           </span>
           <span
             className={`w-2.5 h-2.5 rounded-full ${accentStyles.dotColor} ${isRunning ? 'animate-pulse shadow-lg' : ''}`}
           />
           <span className="text-xs font-bold uppercase tracking-wider text-slate-200">{getStatusLabel()}</span>
-          {position && position.y <= 20 && (
-            <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full font-medium">
-              Header
-            </span>
-          )}
-          {customWidth !== null && (
-            <span className="hidden sm:inline-block text-[9px] bg-slate-800/80 text-slate-400 px-1.5 py-0.5 rounded font-mono">
-              {customWidth}px
-            </span>
-          )}
         </div>
 
-        <div className="flex items-center gap-1">
-          {/* Quick Style Switcher Trigger */}
+        <div className="flex items-center gap-1.5">
+          {/* Quick Expand & Re-center Button when docked / compact / custom */}
+          {(position || customWidth !== null || timerSize === 'compact' || clockStyle === 'compact' || isGhost) && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleExpandFullTimer();
+              }}
+              className="p-1.5 text-xs text-indigo-300 hover:text-white bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/40 rounded-xl transition flex items-center gap-1 font-semibold shadow-sm"
+              title="Expand & Center Timer"
+            >
+              <Maximize2 className="w-3.5 h-3.5 text-indigo-200" />
+              <span className="hidden sm:inline text-[10px]">Center</span>
+            </button>
+          )}
+
+          {/* Auto-Pause Protection Shield Indicator & Flyout */}
           <div className="relative">
             <button
-              onClick={() => setShowQuickStyleMenu(!showQuickStyleMenu)}
-              className={`p-1.5 transition rounded-xl ${
-                showQuickStyleMenu
-                  ? 'bg-indigo-600/30 text-indigo-300 ring-1 ring-indigo-500/50'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAutoPauseSettings((prev) => !prev);
+              }}
+              className={`p-1.5 transition rounded-xl flex items-center gap-1 text-xs ${
+                autoPauseOnTabSwitch || autoPauseOnIdle
+                  ? 'text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-400 hover:bg-slate-800/80 border border-transparent'
               }`}
-              title="Quick Customize Timer Style"
+              title={
+                autoPauseOnTabSwitch || autoPauseOnIdle
+                  ? 'Auto-Pause Active: Tab switch & idle detection protect your focus logs'
+                  : 'Auto-Pause Disabled: Click to configure'
+              }
             >
-              <Palette className="w-4 h-4" />
+              <ShieldCheck className="w-4 h-4" />
+              <span className="text-[10px] hidden sm:inline font-semibold">
+                {autoPauseOnTabSwitch && autoPauseOnIdle ? 'Protected' : 'Auto-Pause'}
+              </span>
             </button>
 
-            {/* Quick Styling Popover Menu */}
-            {showQuickStyleMenu && onUpdateAppearance && (
-              <div className="absolute right-0 top-9 z-50 w-80 bg-slate-950/95 backdrop-blur-2xl border border-slate-800 rounded-2xl p-4 shadow-2xl text-left text-slate-200 space-y-3.5 animate-in fade-in zoom-in-95">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                    <Sliders className="w-3.5 h-3.5 text-indigo-400" />
-                    Quick Timer Styles
+            {/* Quick Auto-Pause Settings Popover */}
+            {showAutoPauseSettings && (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 top-9 w-64 p-3.5 bg-slate-950/95 backdrop-blur-2xl border border-slate-700/80 rounded-2xl shadow-2xl z-50 text-left text-slate-200 animate-in fade-in zoom-in-95 duration-150"
+              >
+                <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-slate-800">
+                  <span className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    Focus Accuracy Guard
                   </span>
                   <button
-                    onClick={() => setShowQuickStyleMenu(false)}
-                    className="text-xs text-slate-500 hover:text-white"
+                    type="button"
+                    onClick={() => setShowAutoPauseSettings(false)}
+                    className="text-slate-400 hover:text-slate-200 p-0.5 rounded hover:bg-slate-800"
                   >
-                    Done
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
-                {/* Clock Layout Selector */}
-                <div>
-                  <label className="text-[11px] font-semibold text-slate-400 block mb-1.5">Layout Mode</label>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {[
-                      { id: 'digital', name: 'Digital' },
-                      { id: 'ring', name: 'Radial Ring' },
-                      { id: 'minimal', name: 'Minimal' },
-                      { id: 'lcd', name: 'Retro LCD' },
-                      { id: 'hud', name: 'Cyber HUD' },
-                      { id: 'compact', name: 'Mini Bar' },
-                    ].map((mode) => (
-                      <button
-                        key={mode.id}
-                        onClick={() => onUpdateAppearance({ clockStyle: mode.id as ClockStyle })}
-                        className={`px-2 py-1.5 rounded-lg text-xs font-medium border text-center transition ${
-                          clockStyle === mode.id
-                            ? 'bg-indigo-600/30 border-indigo-500 text-white'
-                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {mode.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Accent Color Palettes & Custom Gradient */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-[11px] font-semibold text-slate-400">Color & Gradient</label>
-                    {appearance?.timerCustomColor && (
-                      <button
-                        onClick={() => onUpdateAppearance({ timerCustomColor: undefined })}
-                        className="text-[10px] text-indigo-400 hover:underline"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-
-                  <ColorPickerControl
-                    label="Timer Theme Color"
-                    value={appearance?.timerCustomColor || '#6366f1'}
-                    glowIntensity={appearance?.timerGlowIntensity ?? 50}
-                    showGlowControl={true}
-                    onChange={(val, glow) =>
-                      onUpdateAppearance({
-                        timerCustomColor: val,
-                        ...(glow !== undefined ? { timerGlowIntensity: glow } : {}),
-                      })
-                    }
-                    allowGradients={true}
-                  />
-                </div>
-
-                {/* Freeform Width & Scale Slider */}
-                <div className="pt-2 border-t border-slate-800 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
-                      <Maximize2 className="w-3.5 h-3.5 text-indigo-400" />
-                      Widget Width & Scale
-                    </label>
-                    <span className="text-[11px] font-mono text-indigo-300">
-                      {effectiveWidth}px
-                    </span>
-                  </div>
-
-                  <input
-                    type="range"
-                    min="260"
-                    max="900"
-                    step="10"
-                    value={effectiveWidth}
-                    onChange={(e) => setCustomWidth(parseInt(e.target.value, 10))}
-                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                  />
-
-                  <div className="grid grid-cols-4 gap-1 pt-1">
-                    {[
-                      { label: 'Compact', size: 320, preset: 'compact' as WidgetSize },
-                      { label: 'Normal', size: 440, preset: 'normal' as WidgetSize },
-                      { label: 'Large', size: 580, preset: 'large' as WidgetSize },
-                      { label: 'Hero', size: 760, preset: 'hero' as WidgetSize },
-                    ].map((p) => (
-                      <button
-                        key={p.label}
-                        onClick={() => {
-                          setCustomWidth(p.size);
-                          onUpdateAppearance({ timerSize: p.preset });
-                        }}
-                        className={`px-1.5 py-1 rounded text-[10px] font-medium border text-center transition ${
-                          effectiveWidth === p.size
-                            ? 'bg-indigo-600/30 border-indigo-500 text-white'
-                            : 'bg-slate-900/90 border-slate-800 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {customWidth !== null && (
-                    <button
-                      onClick={() => setCustomWidth(null)}
-                      className="w-full py-1 text-[10px] text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 rounded-lg transition"
-                    >
-                      Reset to Preset Width
-                    </button>
-                  )}
-                </div>
-
-                {/* Size & Ghost Toggle */}
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
-                  <div>
-                    <label className="text-[10px] text-slate-400 block mb-1">Preset Size</label>
-                    <select
-                      value={timerSize}
+                <div className="space-y-3 text-xs">
+                  {/* Toggle 1: Tab Switch */}
+                  <label className="flex items-start justify-between gap-2 cursor-pointer group select-none">
+                    <div>
+                      <p className="font-semibold text-slate-200 group-hover:text-white">Tab Switch Pause</p>
+                      <p className="text-[10px] text-slate-400 leading-tight">Auto-pause when switching tabs</p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={autoPauseOnTabSwitch}
                       onChange={(e) => {
-                        setCustomWidth(null);
-                        onUpdateAppearance({ timerSize: e.target.value as WidgetSize });
+                        if (onUpdateAppearance) {
+                          onUpdateAppearance({ autoPauseOnTabSwitch: e.target.checked });
+                        }
                       }}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg text-xs px-2 py-1 text-slate-200 outline-none"
-                    >
-                      <option value="compact">Compact (320px)</option>
-                      <option value="normal">Normal (440px)</option>
-                      <option value="large">Large (580px)</option>
-                      <option value="hero">Hero Studio (760px)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-400 block mb-1">Border & Glow</label>
-                    <select
-                      value={timerBorder}
-                      onChange={(e) => onUpdateAppearance({ timerBorder: e.target.value as WidgetBorder })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg text-xs px-2 py-1 text-slate-200 outline-none"
-                    >
-                      <option value="subtle">Subtle</option>
-                      <option value="glow">Neon Glow</option>
-                      <option value="double">Double Glass</option>
-                      <option value="dashed">Tech Dashed</option>
-                      <option value="none">No Border</option>
-                    </select>
-                  </div>
-                </div>
+                      className="mt-0.5 w-4 h-4 rounded accent-emerald-500 cursor-pointer"
+                    />
+                  </label>
 
-                {/* Pure Ghost / Transparent toggle */}
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-xs text-slate-300">Ghost (0% Background)</span>
-                  <button
-                    onClick={() => onUpdateAppearance({ timerTransparentGhost: !isGhost })}
-                    className={`w-9 h-5 rounded-full transition flex items-center px-0.5 ${
-                      isGhost ? 'bg-indigo-600 justify-end' : 'bg-slate-800 justify-start'
-                    }`}
-                  >
-                    <span className="w-4 h-4 rounded-full bg-white shadow-sm" />
-                  </button>
+                  {/* Toggle 2: Idle Activity */}
+                  <label className="flex items-start justify-between gap-2 cursor-pointer group select-none">
+                    <div>
+                      <p className="font-semibold text-slate-200 group-hover:text-white">Idle Activity Pause</p>
+                      <p className="text-[10px] text-slate-400 leading-tight">Pause on inactive mouse/keyboard</p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={autoPauseOnIdle}
+                      onChange={(e) => {
+                        if (onUpdateAppearance) {
+                          onUpdateAppearance({ autoPauseOnIdle: e.target.checked });
+                        }
+                      }}
+                      className="mt-0.5 w-4 h-4 rounded accent-emerald-500 cursor-pointer"
+                    />
+                  </label>
+
+                  {/* Idle Timeout Threshold Selector */}
+                  {autoPauseOnIdle && (
+                    <div className="pt-2 border-t border-slate-800/80">
+                      <div className="flex justify-between text-[11px] text-slate-300 mb-1.5">
+                        <span>Inactivity Threshold</span>
+                        <span className="font-mono text-emerald-400 font-bold">{idleTimeoutMinutes} min</span>
+                      </div>
+                      <div className="flex gap-1.5">
+                        {[2, 5, 10, 15].map((mins) => (
+                          <button
+                            key={mins}
+                            type="button"
+                            onClick={() => {
+                              if (onUpdateAppearance) {
+                                onUpdateAppearance({ idleTimeoutMinutes: mins });
+                              }
+                            }}
+                            className={`flex-1 py-1 text-[10px] font-semibold rounded-lg border transition ${
+                              idleTimeoutMinutes === mins
+                                ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300'
+                                : 'bg-slate-800/60 border-slate-700/50 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {mins}m
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
           </div>
 
-          {position && (
-            <button
-              onClick={() => setPosition(null)}
-              className="p-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition rounded-xl hover:bg-slate-800 flex items-center gap-1"
-              title="Re-center Timer"
-            >
-              <Move className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {/* Settings / Focus Customizer Drawer */}
           <button
-            onClick={onOpenMethodCustomizer}
-            className="p-1.5 text-slate-400 hover:text-slate-200 transition rounded-xl hover:bg-slate-800"
-            title="Configure Focus Method & Regimen"
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenMethodCustomizer();
+            }}
+            className="p-1.5 text-slate-400 hover:text-slate-200 transition rounded-xl hover:bg-slate-800/80"
+            title="Focus Settings & Customization"
           >
             <Settings className="w-4 h-4" />
           </button>
+
+          {/* Zen / Fullscreen Mode Toggle */}
           <button
-            onClick={() => setIsQuickHidden(true)}
-            className="p-1.5 text-slate-400 hover:text-slate-200 transition rounded-xl hover:bg-slate-800"
-            title="Quick Hide Widget (H)"
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewModeChange(viewMode === 'fullscreen' ? 'compact' : 'fullscreen');
+            }}
+            className="p-1.5 text-slate-400 hover:text-slate-200 transition rounded-xl hover:bg-slate-800/80"
+            title={viewMode === 'fullscreen' ? 'Compact Mode' : 'Fullscreen Mode'}
           >
-            <EyeOff className="w-4 h-4" />
+            <Maximize className="w-4 h-4" />
           </button>
+
+          {/* Minimize to bottom pill dock (H) */}
           <button
-            onClick={() => onViewModeChange('zen')}
-            className="p-1.5 text-slate-400 hover:text-slate-200 transition rounded-xl hover:bg-slate-800"
-            title="Zen Mode (Z)"
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsQuickHidden(true);
+            }}
+            className="p-1.5 text-slate-400 hover:text-slate-200 transition rounded-xl hover:bg-slate-800/80"
+            title="Minimize Timer (H)"
           >
             <Minimize2 className="w-4 h-4" />
           </button>
@@ -1155,14 +1398,31 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
         </div>
       ) : clockStyle === 'compact' ? (
         /* CLOCK STYLE 5: Micro Bar Compact Horizontal */
-        <div className="flex items-center justify-center gap-4 my-3 py-1">
-          <h1 className={`text-4xl sm:text-5xl font-black tracking-tight text-white ${fontClass} ${accentStyles.glowClass}`}>
-            {formatTime(remainingSeconds)}
-          </h1>
-          <div className="text-left border-l border-slate-800 pl-3">
-            <p className="text-xs font-bold text-slate-200">{getStatusLabel()}</p>
-            <p className="text-[10px] text-slate-400">Cycle {currentCycle} / {methodConfig.cyclesBeforeLongBreak}</p>
+        <div className="flex items-center justify-between gap-3 my-3 py-1 px-1">
+          <div className="flex items-center gap-3">
+            <h1 className={`text-4xl sm:text-5xl font-black tracking-tight text-white ${fontClass} ${accentStyles.glowClass}`}>
+              {formatTime(remainingSeconds)}
+            </h1>
+            <div className="text-left border-l border-slate-800 pl-3">
+              <p className="text-xs font-bold text-slate-200">{getStatusLabel()}</p>
+              <p className="text-[10px] text-slate-400">Cycle {currentCycle} / {methodConfig.cyclesBeforeLongBreak}</p>
+            </div>
           </div>
+          {onUpdateAppearance && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleExpandFullTimer();
+              }}
+              className="p-2 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-200 hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition shadow"
+              title="Expand to Full Digital Display"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+              <span>Expand Display</span>
+            </button>
+          )}
         </div>
       ) : (
         /* CLOCK STYLE 6: Digital Classic Mode */
@@ -1193,6 +1453,57 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
           <span className="uppercase tracking-wider text-[11px] bg-slate-800/60 px-2 py-0.5 rounded-full">
             {methodConfig.type}
           </span>
+        </div>
+      )}
+
+      {/* Auto-Pause Notification Banner */}
+      {autoPauseNotice && (
+        <div className="my-3.5 p-3.5 bg-amber-500/15 border border-amber-500/40 rounded-2xl backdrop-blur-md text-left text-amber-200 animate-in fade-in slide-in-from-top-2 duration-300 shadow-xl relative">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-amber-500/25 rounded-xl text-amber-300 shrink-0 mt-0.5 animate-pulse">
+              {autoPauseNotice.reason === 'tab_switch' ? (
+                <EyeOff className="w-4 h-4" />
+              ) : (
+                <Clock className="w-4 h-4" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0 pr-4">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <p className="text-xs font-bold text-amber-100">{autoPauseNotice.message}</p>
+                <span className="text-[9px] bg-amber-500/30 text-amber-200 px-1.5 py-0.5 rounded font-mono font-bold uppercase tracking-wider">
+                  Accuracy Guard
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-200/80 leading-relaxed mt-1">
+                {autoPauseNotice.details}
+              </p>
+              <div className="flex items-center gap-2 mt-2.5">
+                <button
+                  type="button"
+                  onClick={handleResumeFocus}
+                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-md transition active:scale-95 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Resume Focus</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoPauseNotice(null)}
+                  className="px-3 py-1.5 text-xs text-amber-300 hover:text-amber-100 hover:bg-amber-500/20 rounded-xl transition font-medium cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAutoPauseNotice(null)}
+              className="absolute top-3 right-3 text-amber-400/80 hover:text-amber-200 p-1 rounded-lg hover:bg-amber-500/20 transition cursor-pointer"
+              title="Dismiss alert"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -1233,7 +1544,45 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
         </p>
       )}
 
-      {/* Corner Resize Handles */}
+      {/* Corner Resize Handles for all 4 corners */}
+      {/* Top-Right Handle */}
+      <div
+        onPointerDown={(e) => handleResizePointerDown(e, 'ne')}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={handleResizePointerUp}
+        onPointerCancel={handleResizePointerUp}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          setCustomWidth(null);
+        }}
+        title="Drag corner to resize • Double-click to reset size"
+        style={{ touchAction: 'none' }}
+        className="absolute top-1 right-1 w-6 h-6 cursor-ne-resize flex items-center justify-center opacity-40 hover:opacity-100 group-hover/timer:opacity-80 transition-opacity z-30 text-slate-400 hover:text-indigo-400 select-none"
+      >
+        <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current transform rotate-90">
+          <path d="M22 22H20V20H22V22ZM22 16H20V18H22V16ZM18 20H16V22H18V20ZM22 12H20V14H22V12ZM14 20H12V22H14V20ZM18 16H16V18H18V16Z" />
+        </svg>
+      </div>
+
+      {/* Top-Left Handle */}
+      <div
+        onPointerDown={(e) => handleResizePointerDown(e, 'nw')}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={handleResizePointerUp}
+        onPointerCancel={handleResizePointerUp}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          setCustomWidth(null);
+        }}
+        title="Drag corner to resize • Double-click to reset size"
+        style={{ touchAction: 'none' }}
+        className="absolute top-1 left-1 w-6 h-6 cursor-nw-resize flex items-center justify-center opacity-40 hover:opacity-100 group-hover/timer:opacity-80 transition-opacity z-30 text-slate-400 hover:text-indigo-400 select-none"
+      >
+        <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current transform rotate-180">
+          <path d="M22 22H20V20H22V22ZM22 16H20V18H22V16ZM18 20H16V22H18V20ZM22 12H20V14H22V12ZM14 20H12V22H14V20ZM18 16H16V18H18V16Z" />
+        </svg>
+      </div>
+
       {/* Bottom-Right Handle */}
       <div
         onPointerDown={(e) => handleResizePointerDown(e, 'se')}
@@ -1244,9 +1593,9 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
           e.stopPropagation();
           setCustomWidth(null);
         }}
-        title="Drag corner to resize timer width • Double click to reset"
+        title="Drag corner to resize • Double-click to reset size"
         style={{ touchAction: 'none' }}
-        className="absolute bottom-1 right-1 w-5 h-5 cursor-se-resize flex items-center justify-center opacity-40 hover:opacity-100 group-hover/timer:opacity-75 transition-opacity z-20 text-slate-400 hover:text-indigo-400 select-none"
+        className="absolute bottom-1 right-1 w-6 h-6 cursor-se-resize flex items-center justify-center opacity-40 hover:opacity-100 group-hover/timer:opacity-80 transition-opacity z-30 text-slate-400 hover:text-indigo-400 select-none"
       >
         <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current">
           <path d="M22 22H20V20H22V22ZM22 16H20V18H22V16ZM18 20H16V22H18V20ZM22 12H20V14H22V12ZM14 20H12V22H14V20ZM18 16H16V18H18V16Z" />
@@ -1263,9 +1612,9 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
           e.stopPropagation();
           setCustomWidth(null);
         }}
-        title="Drag corner to resize timer width • Double click to reset"
+        title="Drag corner to resize • Double-click to reset size"
         style={{ touchAction: 'none' }}
-        className="absolute bottom-1 left-1 w-5 h-5 cursor-sw-resize flex items-center justify-center opacity-40 hover:opacity-100 group-hover/timer:opacity-75 transition-opacity z-20 text-slate-400 hover:text-indigo-400 select-none"
+        className="absolute bottom-1 left-1 w-6 h-6 cursor-sw-resize flex items-center justify-center opacity-40 hover:opacity-100 group-hover/timer:opacity-80 transition-opacity z-30 text-slate-400 hover:text-indigo-400 select-none"
       >
         <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current transform scale-x-[-1]">
           <path d="M22 22H20V20H22V22ZM22 16H20V18H22V16ZM18 20H16V22H18V20ZM22 12H20V14H22V12ZM14 20H12V22H14V20ZM18 16H16V18H18V16Z" />

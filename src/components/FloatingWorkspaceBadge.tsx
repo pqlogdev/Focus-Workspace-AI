@@ -50,6 +50,7 @@ interface FloatingWorkspaceBadgeProps {
   onToggleRooms: () => void;
   onToggleAiChat: () => void;
   onToggleZenMode: () => void;
+  onToggleSoundGenerator?: () => void;
 }
 
 export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
@@ -73,6 +74,7 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
   onToggleRooms,
   onToggleAiChat,
   onToggleZenMode,
+  onToggleSoundGenerator,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -664,6 +666,29 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
                       <div className="text-[10px] text-indigo-400/80 truncate">Study assistant</div>
                     </div>
                   </button>
+
+                  {onToggleSoundGenerator && (
+                    <button
+                      onClick={() => {
+                        setIsOpen(false);
+                        onToggleSoundGenerator();
+                      }}
+                      className="p-2.5 col-span-2 rounded-2xl bg-gradient-to-r from-indigo-950/80 via-purple-950/80 to-slate-900/90 hover:from-indigo-900/90 hover:to-purple-900/90 border border-indigo-500/40 text-left transition flex items-center gap-2.5 group shadow-md"
+                    >
+                      <div className="w-6 h-6 rounded-lg bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center text-indigo-300 shrink-0">
+                        <Sparkles className="w-3.5 h-3.5 animate-pulse text-indigo-300" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-bold text-white truncate flex items-center gap-1.5">
+                          <span>AI Sound Generator</span>
+                          <span className="px-1.5 py-0.2 bg-indigo-500/20 text-indigo-300 text-[9px] rounded-full font-bold">
+                            Gemini
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 truncate">Generate ambient soundscapes calibrated to tasks</div>
+                      </div>
+                    </button>
+                  )}
                 </div>
               </div>
 

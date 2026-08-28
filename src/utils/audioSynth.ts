@@ -166,6 +166,71 @@ class AmbientSynthesizer {
     }
   }
 
+  // Binaural Beat generator (stereo carrier wave + delta frequency offset)
+  public playBinaural(freqHz: number = 40, volume: number = 0.3) {
+    const id = 'binaural-synth';
+    if (this.activeNodes.has(id)) {
+      this.setVolume(id, volume);
+      return;
+    }
+
+    try {
+      const ctx = this.getContext();
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(volume * 0.4, ctx.currentTime);
+      masterGain.connect(ctx.destination);
+
+      const baseCarrier = 216; // Pure warm fundamental carrier
+      const leftFreq = baseCarrier;
+      const rightFreq = baseCarrier + Math.max(1, Math.min(60, freqHz));
+
+      const oscLeft = ctx.createOscillator();
+      const oscRight = ctx.createOscillator();
+      oscLeft.type = 'sine';
+      oscRight.type = 'sine';
+      oscLeft.frequency.setValueAtTime(leftFreq, ctx.currentTime);
+      oscRight.frequency.setValueAtTime(rightFreq, ctx.currentTime);
+
+      // Stereo splitter / panner
+      if (ctx.createStereoPanner) {
+        const panL = ctx.createStereoPanner();
+        const panR = ctx.createStereoPanner();
+        panL.pan.setValueAtTime(-0.95, ctx.currentTime);
+        panR.pan.setValueAtTime(0.95, ctx.currentTime);
+
+        oscLeft.connect(panL);
+        panL.connect(masterGain);
+
+        oscRight.connect(panR);
+        panR.connect(masterGain);
+      } else {
+        oscLeft.connect(masterGain);
+        oscRight.connect(masterGain);
+      }
+
+      oscLeft.start();
+      oscRight.start();
+
+      const stopFn = () => {
+        try {
+          oscLeft.stop();
+          oscRight.stop();
+          oscLeft.disconnect();
+          oscRight.disconnect();
+          masterGain.disconnect();
+        } catch {}
+      };
+
+      this.activeNodes.set(id, { gain: masterGain, stop: stopFn });
+    } catch (e) {
+      console.warn('Binaural beat synthesis error:', e);
+    }
+  }
+
+  public stopBinaural() {
+    this.stopAmbient('binaural-synth');
+  }
+
   // Play procedural ambient sounds
   public playAmbient(id: string, type: string, initialVolume: number) {
     if (this.activeNodes.has(id)) {
@@ -176,7 +241,7 @@ class AmbientSynthesizer {
     try {
       const ctx = this.getContext();
       const masterGain = ctx.createGain();
-      masterGain.gain.setValueAtTime(initialVolume, ctx.currentTime);
+      masterGain.gain.setValueAtTime(Math.max(0, Math.min(1, initialVolume)), ctx.currentTime);
       masterGain.connect(ctx.destination);
 
       let stopFn = () => {};
@@ -207,14 +272,36 @@ class AmbientSynthesizer {
 
         const filter = ctx.createBiquadFilter();
         filter.type = type === 'thunder' ? 'lowpass' : 'bandpass';
-        filter.frequency.setValueAtTime(type === 'thunder' ? 300 : 1200, ctx.currentTime);
+        filter.frequency.setValueAtTime(type === 'thunder' ? 280 : 1200, ctx.currentTime);
         filter.Q.setValueAtTime(1.0, ctx.currentTime);
 
         noise.connect(filter);
         filter.connect(masterGain);
         noise.start();
 
+        // Occasional thunder rumble
+        let thunderInterval: any = null;
+        if (type === 'thunder') {
+          thunderInterval = setInterval(() => {
+            if (!this.activeNodes.has(id)) return;
+            if (Math.random() > 0.6) {
+              const thOsc = ctx.createOscillator();
+              const thGain = ctx.createGain();
+              thOsc.type = 'triangle';
+              thOsc.frequency.setValueAtTime(60 + Math.random() * 40, ctx.currentTime);
+              thOsc.frequency.exponentialRampToValueAtTime(30, ctx.currentTime + 1.8);
+              thGain.gain.setValueAtTime(0.2, ctx.currentTime);
+              thGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.8);
+              thOsc.connect(thGain);
+              thGain.connect(masterGain);
+              thOsc.start();
+              thOsc.stop(ctx.currentTime + 1.8);
+            }
+          }, 4000);
+        }
+
         stopFn = () => {
+          if (thunderInterval) clearInterval(thunderInterval);
           try {
             noise.stop();
             noise.disconnect();
@@ -248,7 +335,7 @@ class AmbientSynthesizer {
         // Random pops for crackle
         const interval = setInterval(() => {
           if (!this.activeNodes.has(id)) return;
-          if (Math.random() > 0.4) {
+          if (Math.random() > 0.35) {
             const popOsc = ctx.createOscillator();
             const popGain = ctx.createGain();
             popOsc.type = 'triangle';
@@ -269,7 +356,7 @@ class AmbientSynthesizer {
             noise.disconnect();
           } catch {}
         };
-      } else if (type === 'waves' || type === 'forest') {
+      } else if (type === 'waves') {
         // Modulated noise swell
         const bufferSize = ctx.sampleRate * 4;
         const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
@@ -307,16 +394,136 @@ class AmbientSynthesizer {
             lfo.stop();
           } catch {}
         };
+      } else if (type === 'cafe') {
+        // Cafe murmur: lowpass filtered warm chatter texture + gentle cup clinks
+        const bufferSize = ctx.sampleRate * 2;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        let b0 = 0, b1 = 0;
+        for (let i = 0; i < bufferSize; i++) {
+          const white = Math.random() * 2 - 1;
+          b0 = 0.95 * b0 + white * 0.05;
+          b1 = 0.90 * b1 + white * 0.10;
+          data[i] = (b0 + b1) * 0.7;
+        }
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        noise.loop = true;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(550, ctx.currentTime);
+        filter.Q.setValueAtTime(1.5, ctx.currentTime);
+
+        noise.connect(filter);
+        filter.connect(masterGain);
+        noise.start();
+
+        // Subtle ceramic cup/spoon clink interval
+        const clinkInterval = setInterval(() => {
+          if (!this.activeNodes.has(id)) return;
+          if (Math.random() > 0.75) {
+            const clinkOsc = ctx.createOscillator();
+            const clinkGain = ctx.createGain();
+            clinkOsc.type = 'sine';
+            clinkOsc.frequency.setValueAtTime(2400 + Math.random() * 1200, ctx.currentTime);
+            clinkGain.gain.setValueAtTime(0.02 * Math.random(), ctx.currentTime);
+            clinkGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.15);
+            clinkOsc.connect(clinkGain);
+            clinkGain.connect(masterGain);
+            clinkOsc.start();
+            clinkOsc.stop(ctx.currentTime + 0.15);
+          }
+        }, 2200);
+
+        stopFn = () => {
+          clearInterval(clinkInterval);
+          try {
+            noise.stop();
+            noise.disconnect();
+          } catch {}
+        };
+      } else if (type === 'forest') {
+        // Forest breeze + gentle bird chirps
+        const bufferSize = ctx.sampleRate * 3;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        noise.loop = true;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(600, ctx.currentTime);
+        filter.Q.setValueAtTime(0.8, ctx.currentTime);
+
+        noise.connect(filter);
+        filter.connect(masterGain);
+        noise.start();
+
+        // Occasional bird warble chirp
+        const birdInterval = setInterval(() => {
+          if (!this.activeNodes.has(id)) return;
+          if (Math.random() > 0.65) {
+            const bOsc = ctx.createOscillator();
+            const bGain = ctx.createGain();
+            bOsc.type = 'sine';
+            const baseF = 2800 + Math.random() * 1200;
+            bOsc.frequency.setValueAtTime(baseF, ctx.currentTime);
+            bOsc.frequency.linearRampToValueAtTime(baseF + 600, ctx.currentTime + 0.08);
+            bOsc.frequency.linearRampToValueAtTime(baseF + 200, ctx.currentTime + 0.16);
+
+            bGain.gain.setValueAtTime(0.035, ctx.currentTime);
+            bGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
+
+            bOsc.connect(bGain);
+            bGain.connect(masterGain);
+            bOsc.start();
+            bOsc.stop(ctx.currentTime + 0.22);
+          }
+        }, 1800);
+
+        stopFn = () => {
+          clearInterval(birdInterval);
+          try {
+            noise.stop();
+            noise.disconnect();
+          } catch {}
+        };
+      } else if (type === 'crickets') {
+        // Gentle night crickets periodic bursts
+        const cricketInterval = setInterval(() => {
+          if (!this.activeNodes.has(id)) return;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(4500, ctx.currentTime);
+
+          gain.gain.setValueAtTime(0.04, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.09);
+
+          osc.connect(gain);
+          gain.connect(masterGain);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.09);
+        }, 320);
+
+        stopFn = () => {
+          clearInterval(cricketInterval);
+        };
       } else {
-        // Generic fallback ambient tone
+        // Generic fallback ambient tone (warm soothing drone)
         const osc = ctx.createOscillator();
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(180, ctx.currentTime);
+        osc.frequency.setValueAtTime(144, ctx.currentTime);
         osc.connect(masterGain);
         osc.start();
         stopFn = () => {
           try {
             osc.stop();
+            osc.disconnect();
           } catch {}
         };
       }

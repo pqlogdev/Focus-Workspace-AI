@@ -23,6 +23,8 @@ import {
   increment,
   arrayUnion,
   arrayRemove,
+  onSnapshot,
+  getDocFromServer,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import {
@@ -32,10 +34,48 @@ import {
   FocusLog,
   Streak,
   Template,
+  TemplateMember,
   CustomImageRecord,
   RollbackSnapshot,
 } from './types';
 import { PRESET_TEMPLATES } from './data/presetTemplates';
+
+// Operation Types for error diagnosis
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): void {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+    },
+    operationType,
+    path,
+  };
+  console.warn('Firestore Operation Error:', JSON.stringify(errInfo));
+}
 
 // Initialize Firebase Application
 const app = initializeApp(firebaseConfig);
@@ -51,6 +91,20 @@ googleProvider.setCustomParameters({
 export const db = firebaseConfig.firestoreDatabaseId
   ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
   : getFirestore(app);
+
+// Connection test helper
+export async function testFirestoreConnection(): Promise<boolean> {
+  try {
+    await getDocFromServer(doc(db, 'system', 'connection_test'));
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.info('Firestore client running offline / local fallback');
+    }
+    return false;
+  }
+}
+testFirestoreConnection().catch(() => {});
 
 /**
  * Sign in with Google using popup
@@ -295,52 +349,202 @@ export async function clearRollbackSnapshotFromCloud(userId: string): Promise<vo
 }
 
 // ----------------------------------------------------
-// USER PERSONAL TEMPLATES (Firestore: users/{userId}/templates/{templateId})
+// USER PERSONAL & GROUP TEMPLATES (Firestore: templates/{templateId} & users/{userId}/templates/{templateId})
+// Note: We do NOT store a separate groups table in the database;
+// the template stores isGroup (0 or 1) and the user list (max 5 members) directly in the template data.
 // ----------------------------------------------------
 
 /**
- * Save or update a personal workspace template for this user
+ * Validate and cap template members to maximum 5 members
  */
-export async function savePersonalTemplate(userId: string, template: Template): Promise<void> {
-  try {
-    const templateRef = doc(db, 'users', userId, 'templates', template.id);
-    await setDoc(templateRef, {
-      ...template,
-      updatedAt: new Date().toISOString(),
+export function sanitizeTemplateMembers(
+  creatorId: string,
+  creatorName?: string,
+  creatorPhoto?: string,
+  members?: TemplateMember[]
+): { members: TemplateMember[]; memberUids: string[] } {
+  const result: TemplateMember[] = [];
+  const uids = new Set<string>();
+
+  // Ensure creator is included
+  if (creatorId) {
+    result.push({
+      uid: creatorId,
+      displayName: creatorName || 'Creator',
+      photoURL: creatorPhoto,
+      role: 'owner',
+      addedAt: new Date().toISOString(),
     });
+    uids.add(creatorId);
+  }
+
+  // Add additional members up to a hard maximum of 5 members total
+  if (members && Array.isArray(members)) {
+    for (const m of members) {
+      if (result.length >= 5) break; // Strict 5-member limit per prompt
+      if (m.uid && !uids.has(m.uid)) {
+        result.push({
+          uid: m.uid,
+          email: m.email || '',
+          displayName: m.displayName || m.email?.split('@')[0] || 'Member',
+          photoURL: m.photoURL,
+          role: m.role || 'member',
+          addedAt: m.addedAt || new Date().toISOString(),
+        });
+        uids.add(m.uid);
+      } else if (m.email && !result.some((r) => r.email === m.email)) {
+        result.push({
+          uid: m.uid || `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          email: m.email,
+          displayName: m.displayName || m.email.split('@')[0],
+          photoURL: m.photoURL,
+          role: m.role || 'member',
+          addedAt: m.addedAt || new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  return {
+    members: result.slice(0, 5),
+    memberUids: Array.from(uids).slice(0, 5),
+  };
+}
+
+/**
+ * Save or update a workspace template (Personal with isGroup: 0, or Group with isGroup: 1, max 5 members)
+ */
+export async function savePersonalTemplate(userId: string, template: Template): Promise<Template> {
+  try {
+    const isGroup = template.isGroup === 1 ? 1 : 0;
+    const { members, memberUids } = sanitizeTemplateMembers(
+      template.creatorId || userId,
+      template.creatorName,
+      template.creatorPhoto,
+      template.members
+    );
+
+    const cleanTemplate: Template = {
+      ...template,
+      isGroup,
+      members,
+      memberUids,
+      updatedAt: new Date().toISOString(),
+      createdAt: template.createdAt || new Date().toISOString(),
+    };
+
+    // Save to user subcollection
+    const userTemplateRef = doc(db, 'users', userId, 'templates', template.id);
+    await setDoc(userTemplateRef, cleanTemplate);
+
+    // If it is a group template (isGroup: 1) or public marketplace template, also persist to root templates collection
+    if (isGroup === 1 || cleanTemplate.isPublic) {
+      const rootTemplateRef = doc(db, 'templates', template.id);
+      await setDoc(rootTemplateRef, cleanTemplate, { merge: true });
+    }
+
+    return cleanTemplate;
   } catch (error) {
-    console.error('Error saving personal template to Firestore:', error);
+    console.error('Error saving template to Firestore:', error);
     throw error;
   }
 }
 
 /**
- * Load all personal templates for a user from Firestore
+ * Load all personal (isGroup: 0) and group (isGroup: 1) templates accessible to the user
  */
-export async function loadPersonalTemplates(userId: string): Promise<Template[]> {
+export async function loadPersonalTemplates(userId: string, userEmail?: string | null): Promise<Template[]> {
   try {
-    const templatesCol = collection(db, 'users', userId, 'templates');
-    const snap = await getDocs(templatesCol);
-    const templates: Template[] = [];
-    snap.forEach((d) => {
-      templates.push(d.data() as Template);
-    });
-    return templates.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+    const templatesMap = new Map<string, Template>();
+
+    // 1. Fetch from user's subcollection
+    try {
+      const userTemplatesCol = collection(db, 'users', userId, 'templates');
+      const snap = await getDocs(userTemplatesCol);
+      snap.forEach((d) => {
+        const data = d.data() as Template;
+        templatesMap.set(data.id, {
+          ...data,
+          isGroup: data.isGroup === 1 ? 1 : 0,
+          members: data.members || [],
+          memberUids: data.memberUids || [data.creatorId],
+        });
+      });
+    } catch (e) {
+      console.warn('Could not fetch user subcollection templates:', e);
+    }
+
+    // 2. Fetch from root templates collection to find Group templates where user is in members list
+    try {
+      const rootTemplatesCol = collection(db, 'templates');
+      const rootSnap = await getDocs(rootTemplatesCol);
+      rootSnap.forEach((d) => {
+        const data = d.data() as Template;
+        const isMember =
+          data.creatorId === userId ||
+          (data.memberUids && data.memberUids.includes(userId)) ||
+          (data.members && data.members.some((m) => m.uid === userId || (userEmail && m.email === userEmail)));
+
+        if (isMember) {
+          templatesMap.set(data.id, {
+            ...data,
+            isGroup: data.isGroup === 1 ? 1 : 0,
+            members: data.members || [],
+            memberUids: data.memberUids || (data.members ? data.members.map((m) => m.uid) : [data.creatorId]),
+          });
+        }
+      });
+    } catch (e) {
+      console.warn('Could not fetch root group templates:', e);
+    }
+
+    const templates = Array.from(templatesMap.values());
+    return templates.sort(
+      (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+    );
   } catch (error) {
-    console.warn('Failed to load personal templates:', error);
+    console.warn('Failed to load personal & group templates:', error);
     return [];
   }
 }
 
 /**
- * Delete a personal template from Firestore
+ * Update member roster for an existing group template (strictly maximum 5 members)
+ */
+export async function updateTemplateMembers(
+  templateId: string,
+  members: TemplateMember[]
+): Promise<TemplateMember[]> {
+  try {
+    const cappedMembers = members.slice(0, 5);
+    const memberUids = cappedMembers.map((m) => m.uid).filter(Boolean);
+
+    const rootRef = doc(db, 'templates', templateId);
+    await updateDoc(rootRef, {
+      members: cappedMembers,
+      memberUids,
+      updatedAt: new Date().toISOString(),
+    });
+
+    return cappedMembers;
+  } catch (error) {
+    console.error('Error updating template members:', error);
+    throw error;
+  }
+}
+
+/**
+ * Delete a template from Firestore
  */
 export async function deletePersonalTemplate(userId: string, templateId: string): Promise<void> {
   try {
     const templateRef = doc(db, 'users', userId, 'templates', templateId);
-    await deleteDoc(templateRef);
+    await deleteDoc(templateRef).catch(() => {});
+
+    const rootTemplateRef = doc(db, 'templates', templateId);
+    await deleteDoc(rootTemplateRef).catch(() => {});
   } catch (error) {
-    console.error('Error deleting personal template:', error);
+    console.error('Error deleting template:', error);
     throw error;
   }
 }
@@ -467,4 +671,71 @@ export async function toggleTemplateLike(templateId: string, userId: string, isL
     console.warn('Error toggling template like:', error);
   }
 }
+
+// ----------------------------------------------------
+// USER STREAK & FOCUS LOGS (Firestore: users/{userId}/streak/current)
+// ----------------------------------------------------
+
+/**
+ * Save user streak data directly to Firestore document users/{userId}/streak/current
+ */
+export async function saveUserStreak(userId: string, streak: Streak): Promise<void> {
+  const streakPath = `users/${userId}/streak/current`;
+  try {
+    const streakRef = doc(db, 'users', userId, 'streak', 'current');
+    await setDoc(
+      streakRef,
+      {
+        ...streak,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, streakPath);
+  }
+}
+
+/**
+ * Load user streak data from Firestore
+ */
+export async function loadUserStreak(userId: string): Promise<Streak | null> {
+  const streakPath = `users/${userId}/streak/current`;
+  try {
+    const streakRef = doc(db, 'users', userId, 'streak', 'current');
+    const snap = await getDoc(streakRef);
+    if (snap.exists()) {
+      return snap.data() as Streak;
+    }
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, streakPath);
+    return null;
+  }
+}
+
+/**
+ * Subscribe in real-time to user streak updates in Firestore
+ */
+export function subscribeToUserStreak(
+  userId: string,
+  onUpdate: (streak: Streak) => void,
+  onError?: (err: any) => void
+): () => void {
+  const streakPath = `users/${userId}/streak/current`;
+  const streakRef = doc(db, 'users', userId, 'streak', 'current');
+  return onSnapshot(
+    streakRef,
+    (snap) => {
+      if (snap.exists()) {
+        onUpdate(snap.data() as Streak);
+      }
+    },
+    (err) => {
+      handleFirestoreError(err, OperationType.GET, streakPath);
+      onError?.(err);
+    }
+  );
+}
+
 

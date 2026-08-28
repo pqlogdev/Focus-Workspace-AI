@@ -58,6 +58,7 @@ interface AudioPlayerProps {
   appearance?: WorkspaceAppearanceConfig;
   onUpdateAppearance?: (changes: Partial<WorkspaceAppearanceConfig>) => void;
   isHighlighted?: boolean;
+  onOpenSoundGenerator?: () => void;
 }
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
@@ -69,6 +70,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   appearance,
   onUpdateAppearance,
   isHighlighted = false,
+  onOpenSoundGenerator,
 }) => {
   const audioCfg = audioConfig || config || {};
 
@@ -92,7 +94,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   };
 
   const [isPlayingMusic, setIsPlayingMusic] = useState(false);
-  const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
+  const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(() => {
+    const saved = localStorage.getItem('airiser_audio_track_index');
+    if (saved !== null) {
+      const val = parseInt(saved, 10);
+      if (!isNaN(val) && val >= 0) return val;
+    }
+    return 0;
+  });
   const [activeDrawerTab, setActiveDrawerTab] = useState<'music' | 'ambient' | null>(null);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
 
@@ -183,6 +192,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       localStorage.removeItem('airiser_audio_position');
     }
   }, [position]);
+
+  useEffect(() => {
+    localStorage.setItem('airiser_audio_track_index', currentTrackIndex.toString());
+  }, [currentTrackIndex]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (
@@ -861,6 +874,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             </span>
           </button>
 
+          {/* AI Sound Generator Action Button */}
+          {onOpenSoundGenerator && (
+            <button
+              onClick={onOpenSoundGenerator}
+              className="px-2 py-1 bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 border border-indigo-500/40 text-indigo-200 hover:text-white rounded-lg text-xs flex items-center gap-1.5 transition shadow-sm group"
+              title="Open AI Sound Generator (Gemini Powered)"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400 group-hover:rotate-12 transition animate-pulse" />
+              <span className="font-semibold text-[11px] hidden md:inline">AI Sound</span>
+            </button>
+          )}
+
           {/* Style Customizer Trigger */}
           <button
             onClick={() => setShowStyleMenu(!showStyleMenu)}
@@ -1087,6 +1112,19 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 <span>Ambient Soundscapes</span>
                 <span className="text-amber-400 font-semibold">{activeAmbientCount} Active</span>
               </div>
+
+              {onOpenSoundGenerator && (
+                <button
+                  onClick={() => {
+                    setActiveDrawerTab(null);
+                    onOpenSoundGenerator();
+                  }}
+                  className="w-full py-2 px-3 bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/40 hover:to-purple-600/40 border border-indigo-500/40 rounded-xl text-xs font-semibold text-indigo-200 hover:text-white flex items-center justify-center gap-2 transition shadow-sm"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                  <span>AI Sound Generator (Ground with Tasks & Notes)</span>
+                </button>
+              )}
 
               <div className="max-h-56 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
                 {ambientTracks.map((track) => (

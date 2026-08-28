@@ -61,7 +61,14 @@ import {
   Zap,
   Radio,
   Minimize2,
-  Maximize2
+  Maximize2,
+  Upload,
+  UploadCloud,
+  Loader2,
+  Link2,
+  FileVideo,
+  RefreshCw,
+  Play,
 } from 'lucide-react';
 
 interface CustomizerDrawerProps {
@@ -85,6 +92,7 @@ interface CustomizerDrawerProps {
   onOpenTasks?: () => void;
   onOpenNotes?: () => void;
   onOpenAiChat?: () => void;
+  onOpenSoundGenerator?: () => void;
   onCustomizingPanelChange?: (panel: 'timer' | 'music' | 'notes' | 'canvas' | null) => void;
 }
 
@@ -109,6 +117,7 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
   onOpenTasks,
   onOpenNotes,
   onOpenAiChat,
+  onOpenSoundGenerator,
   onCustomizingPanelChange,
 }) => {
   const [activeTab, setActiveTab] = useState<'background' | 'audio' | 'method' | 'appearance'>(initialTab);
@@ -117,10 +126,15 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
   const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
   const [clipboardFeedback, setClipboardFeedback] = useState<string | null>(null);
 
-  // Custom wallpaper inputs
+  // Custom wallpaper inputs & upload states
   const [customBgUrl, setCustomBgUrl] = useState('');
   const [customBgTitle, setCustomBgTitle] = useState('');
   const [customBgType, setCustomBgType] = useState<'image' | 'video'>('image');
+  const [isResolvingUrl, setIsResolvingUrl] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [urlPreviewData, setUrlPreviewData] = useState<{ directUrl: string; type: 'image' | 'video'; title: string } | null>(null);
 
   if (!isOpen) return null;
 
@@ -151,19 +165,66 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
     });
   };
 
+  // Helper: Resolve a URL (Google Photos, Google Drive, Dropbox, direct MP4/image)
+  const resolveMediaUrl = async (inputUrl: string) => {
+    if (!inputUrl.trim()) return null;
+    setIsResolvingUrl(true);
+    try {
+      const res = await fetch('/api/media/resolve-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: inputUrl.trim() }),
+      });
+      const data = await res.json();
+      if (data && data.directUrl) {
+        setUrlPreviewData({
+          directUrl: data.directUrl,
+          type: data.type || 'image',
+          title: data.title || 'Custom Wallpaper',
+        });
+        return data;
+      }
+      return null;
+    } catch (err) {
+      console.warn('Resolve URL error:', err);
+      return null;
+    } finally {
+      setIsResolvingUrl(false);
+    }
+  };
+
   // Add custom wallpaper to work items and cloud image library
-  const handleAddCustomWallpaper = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customBgUrl.trim()) return;
+  const handleAddCustomWallpaper = async (e?: React.FormEvent, overrideUrl?: string) => {
+    if (e) e.preventDefault();
+    const targetUrl = overrideUrl || customBgUrl.trim();
+    if (!targetUrl) return;
+
+    setIsResolvingUrl(true);
+    let resolvedUrl = targetUrl;
+    let resolvedType: 'image' | 'video' = customBgType;
+    let source: any = 'custom_url';
+
+    try {
+      const resolved = await resolveMediaUrl(targetUrl);
+      if (resolved && resolved.directUrl) {
+        resolvedUrl = resolved.directUrl;
+        resolvedType = resolved.type || customBgType;
+        source = resolved.source || 'custom_url';
+      }
+    } catch (err) {
+      console.warn('URL auto-resolve fallback:', err);
+    } finally {
+      setIsResolvingUrl(false);
+    }
 
     const newItem: MediaItem = {
       id: `custom-bg-${Date.now()}`,
-      title: customBgTitle.trim() || 'Custom Wallpaper',
-      type: customBgType,
-      url: customBgUrl.trim(),
-      thumbnailUrl: customBgType === 'image' ? customBgUrl.trim() : undefined,
+      title: customBgTitle.trim() || (source === 'google_photos' ? 'Google Photos Wallpaper' : 'Custom Wallpaper'),
+      type: resolvedType,
+      url: resolvedUrl,
+      thumbnailUrl: resolvedType === 'image' ? resolvedUrl : undefined,
       duration: 1800,
-      source: 'custom_url',
+      source: source,
       isCustom: true,
       isPreservedAfterReset: false,
       hasResetCustoms: false,
@@ -175,7 +236,7 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
       ...config,
       background: {
         ...config.background,
-        workItems: [newItem, ...currentWork],
+        workItems: [newItem, ...currentWork.filter((i) => i.id !== newItem.id)],
       },
     });
 
@@ -185,7 +246,7 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
       type: newItem.type,
       url: newItem.url,
       thumbnailUrl: newItem.thumbnailUrl,
-      source: 'custom_url',
+      source: newItem.source || 'custom_url',
       isCustom: true,
       isPreservedAfterReset: false,
       hasResetCustoms: false,
@@ -194,8 +255,116 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
 
     setCustomBgUrl('');
     setCustomBgTitle('');
-    setClipboardFeedback('Added custom wallpaper and saved to cloud library!');
-    setTimeout(() => setClipboardFeedback(null), 3500);
+    setUrlPreviewData(null);
+    setClipboardFeedback(`Applied "${newItem.title}" & saved to cloud library!`);
+    setTimeout(() => setClipboardFeedback(null), 4000);
+  };
+
+  // Handle direct file upload (image or video)
+  const handleMediaFileUpload = async (file: File) => {
+    if (!file) return;
+
+    const isVideo = file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(file.name);
+    const isImage = file.type.startsWith('image/') || /\.(png|jpg|jpeg|webp|gif|svg|avif)$/i.test(file.name);
+
+    if (!isVideo && !isImage) {
+      setClipboardFeedback('Please upload an image (JPG, PNG, GIF, WebP) or video (MP4, WebM, MOV).');
+      setTimeout(() => setClipboardFeedback(null), 4000);
+      return;
+    }
+
+    // Limit check (e.g. 50MB max for smooth upload)
+    if (file.size > 50 * 1024 * 1024) {
+      setClipboardFeedback('File size exceeds 50MB limit. Please choose a smaller file.');
+      setTimeout(() => setClipboardFeedback(null), 4000);
+      return;
+    }
+
+    setIsUploadingMedia(true);
+    setUploadProgress(`Uploading ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`);
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64Data = reader.result as string;
+
+        try {
+          const res = await fetch('/api/media/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileData: base64Data,
+              fileName: file.name,
+              fileType: file.type,
+            }),
+          });
+
+          const data = await res.json();
+          if (!data || !data.url) {
+            throw new Error(data?.error || 'Upload failed');
+          }
+
+          const newItem: MediaItem = {
+            id: `upload-bg-${Date.now()}`,
+            title: file.name.replace(/\.[^/.]+$/, ''),
+            type: data.type || (isVideo ? 'video' : 'image'),
+            url: data.url,
+            thumbnailUrl: data.thumbnailUrl || (isVideo ? undefined : data.url),
+            duration: 1800,
+            source: 'upload',
+            isCustom: true,
+            isPreservedAfterReset: false,
+            hasResetCustoms: false,
+            addedAt: new Date().toISOString(),
+          };
+
+          const currentWork = config.background?.workItems || [];
+          onChangeConfig({
+            ...config,
+            background: {
+              ...config.background,
+              workItems: [newItem, ...currentWork.filter((i) => i.id !== newItem.id)],
+            },
+          });
+
+          onSaveCustomImage?.({
+            id: newItem.id,
+            title: newItem.title,
+            type: newItem.type,
+            url: newItem.url,
+            thumbnailUrl: newItem.thumbnailUrl,
+            source: 'upload',
+            isCustom: true,
+            isPreservedAfterReset: false,
+            hasResetCustoms: false,
+            addedAt: newItem.addedAt || new Date().toISOString(),
+          });
+
+          setClipboardFeedback(`Uploaded & set "${newItem.title}" as active wallpaper!`);
+          setTimeout(() => setClipboardFeedback(null), 4500);
+        } catch (uploadErr: any) {
+          console.error('Server upload error:', uploadErr);
+          setClipboardFeedback(`Upload error: ${uploadErr.message || 'Could not save file'}`);
+          setTimeout(() => setClipboardFeedback(null), 4500);
+        } finally {
+          setIsUploadingMedia(false);
+          setUploadProgress(null);
+        }
+      };
+
+      reader.onerror = () => {
+        setIsUploadingMedia(false);
+        setUploadProgress(null);
+        setClipboardFeedback('Failed to read file from disk.');
+        setTimeout(() => setClipboardFeedback(null), 4000);
+      };
+
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('File read exception:', err);
+      setIsUploadingMedia(false);
+      setUploadProgress(null);
+    }
   };
 
   // Paste image URL directly from clipboard
@@ -213,47 +382,8 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
         return;
       }
       const trimmed = text.trim();
-      const isVideo = trimmed.endsWith('.mp4') || trimmed.endsWith('.webm');
-      const newItem: MediaItem = {
-        id: `clipboard-bg-${Date.now()}`,
-        title: customBgTitle.trim() || `Clipboard Wallpaper (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
-        type: isVideo ? 'video' : 'image',
-        url: trimmed,
-        thumbnailUrl: isVideo ? undefined : trimmed,
-        duration: 1800,
-        source: 'clipboard',
-        isCustom: true,
-        isPreservedAfterReset: false,
-        hasResetCustoms: false,
-        addedAt: new Date().toISOString(),
-      };
-
-      const currentWork = config.background?.workItems || [];
-      onChangeConfig({
-        ...config,
-        background: {
-          ...config.background,
-          workItems: [newItem, ...currentWork],
-        },
-      });
-
-      onSaveCustomImage?.({
-        id: newItem.id,
-        title: newItem.title,
-        type: newItem.type,
-        url: newItem.url,
-        thumbnailUrl: newItem.thumbnailUrl,
-        source: 'clipboard',
-        isCustom: true,
-        isPreservedAfterReset: false,
-        hasResetCustoms: false,
-        addedAt: newItem.addedAt || new Date().toISOString(),
-      });
-
-      setCustomBgUrl('');
-      setCustomBgTitle('');
-      setClipboardFeedback('Pasted from clipboard & saved to cloud library!');
-      setTimeout(() => setClipboardFeedback(null), 4000);
+      setCustomBgUrl(trimmed);
+      await handleAddCustomWallpaper(undefined, trimmed);
     } catch (err) {
       console.warn('Clipboard read error:', err);
       setClipboardFeedback('Could not read clipboard. Please paste URL manually.');
@@ -581,12 +711,78 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                 </div>
               </div>
 
-              {/* Custom Wallpaper URL & Clipboard Input */}
+              {/* File Upload Zone (Images & Videos) */}
               <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Add Custom Wallpaper</span>
+                    <UploadCloud className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Upload Media File</span>
+                  </h3>
+                  <span className="text-[10px] text-indigo-300 font-mono bg-indigo-500/10 px-2 py-0.5 rounded-md border border-indigo-500/20">
+                    Up to 50MB
+                  </span>
+                </div>
+
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(true);
+                  }}
+                  onDragLeave={() => setIsDraggingFile(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleMediaFileUpload(e.dataTransfer.files[0]);
+                    }
+                  }}
+                  className={`border-2 border-dashed rounded-2xl p-4 text-center transition flex flex-col items-center justify-center gap-2 relative ${
+                    isDraggingFile
+                      ? 'border-indigo-400 bg-indigo-500/10'
+                      : 'border-slate-800 hover:border-slate-700 bg-slate-900/50'
+                  }`}
+                >
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,video/mp4,video/webm,video/quicktime,video/x-m4v"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleMediaFileUpload(e.target.files[0]);
+                      }
+                    }}
+                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    disabled={isUploadingMedia}
+                  />
+
+                  {isUploadingMedia ? (
+                    <div className="flex flex-col items-center gap-2 py-2">
+                      <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+                      <span className="text-xs text-indigo-300 font-medium">{uploadProgress || 'Processing upload...'}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <Upload className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-slate-200">
+                          Drop image or video here, or <span className="text-indigo-400 underline">browse</span>
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Supports PNG, JPG, GIF, WebP, and MP4 / WebM / MOV videos
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Smart URL & Google Photos / Drive Importer */}
+              <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <Link2 className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Import from Web or Google Photos</span>
                   </h3>
                   <button
                     type="button"
@@ -599,44 +795,118 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                   </button>
                 </div>
 
-                <form onSubmit={handleAddCustomWallpaper} className="space-y-2.5">
+                <form onSubmit={(e) => handleAddCustomWallpaper(e)} className="space-y-2.5">
                   <input
                     type="text"
-                    placeholder="Title (e.g. Kyoto Midnight, Studio Lo-Fi)"
+                    placeholder="Custom Title (optional, e.g. My Kyoto Trip)"
                     value={customBgTitle}
                     onChange={(e) => setCustomBgTitle(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-indigo-500"
                   />
-                  <input
-                    type="url"
-                    placeholder="Image URL / GIF / Direct MP4 URL..."
-                    value={customBgUrl}
-                    onChange={(e) => setCustomBgUrl(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-indigo-500"
-                  />
+                  <div className="relative">
+                    <input
+                      type="url"
+                      placeholder="Paste Google Photos, Drive, Dropbox, or Direct Image/Video URL..."
+                      value={customBgUrl}
+                      onChange={(e) => {
+                        setCustomBgUrl(e.target.value);
+                        setUrlPreviewData(null);
+                      }}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 pr-20 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-indigo-500 font-mono"
+                    />
+                    {customBgUrl.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => resolveMediaUrl(customBgUrl)}
+                        disabled={isResolvingUrl}
+                        className="absolute right-1.5 top-1.5 bottom-1.5 px-2.5 bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-300 text-[10px] font-medium rounded-lg transition flex items-center gap-1 disabled:opacity-50"
+                      >
+                        {isResolvingUrl ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        <span>Resolve</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* URL Resolution Preview */}
+                  {urlPreviewData && (
+                    <div className="p-2.5 bg-slate-900 border border-indigo-500/30 rounded-xl flex items-center gap-3">
+                      <div className="w-14 h-10 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800 relative">
+                        {urlPreviewData.type === 'video' ? (
+                          <div className="w-full h-full flex items-center justify-center text-slate-400">
+                            <Film className="w-4 h-4" />
+                          </div>
+                        ) : (
+                          <img
+                            src={urlPreviewData.directUrl}
+                            alt="Preview"
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-xs font-semibold text-white truncate">Link Resolved!</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">{urlPreviewData.directUrl}</p>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex gap-2">
                     <select
                       value={customBgType}
                       onChange={(e) => setCustomBgType(e.target.value as any)}
                       className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-300 outline-none"
                     >
-                      <option value="image">Image / GIF</option>
-                      <option value="video">Video (MP4)</option>
+                      <option value="image">Image / Photo</option>
+                      <option value="video">Video (MP4 / WebM)</option>
                     </select>
                     <button
                       type="submit"
-                      disabled={!customBgUrl.trim()}
+                      disabled={!customBgUrl.trim() || isResolvingUrl}
                       className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs py-1.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 shadow-md shadow-indigo-900/20"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Save to Cloud Library</span>
+                      {isResolvingUrl ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Resolving & Saving...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Save & Set Wallpaper</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </form>
 
+                {/* Quick Link Helper */}
+                <div className="pt-2 border-t border-slate-900 space-y-1.5">
+                  <span className="text-[10px] text-slate-400 font-medium">Quick Preset / Test Link:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const testUrl = 'https://photos.app.goo.gl/AAVkdPZWQFaP8PRUA';
+                      setCustomBgUrl(testUrl);
+                      setCustomBgTitle('Google Photos Wallpaper');
+                      handleAddCustomWallpaper(undefined, testUrl);
+                    }}
+                    className="w-full text-left p-2 rounded-xl bg-slate-900/80 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-500/40 text-slate-300 hover:text-white transition flex items-center justify-between text-xs group"
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      <span className="truncate">Google Photos Shared Album (AAVkdPZWQFaP8PRUA)</span>
+                    </div>
+                    <span className="text-[10px] text-indigo-400 font-semibold shrink-0 group-hover:underline">1-Click Apply</span>
+                  </button>
+                </div>
+
                 <div className="pt-1 flex items-center gap-1.5 text-[11px] text-slate-400">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>Images are retained in cloud storage & preserved across resets.</span>
+                  <span>Media is resolved into direct high-res streams and synced to your cloud workspace.</span>
                 </div>
               </div>
 
@@ -680,6 +950,7 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                                 <img
                                   src={item.thumbnailUrl || item.url}
                                   alt={item.title}
+                                  referrerPolicy="no-referrer"
                                   className="w-full h-full object-cover"
                                   onError={(e) => {
                                     (e.target as any).src = PRESET_BACKGROUNDS[0].url;
@@ -892,6 +1163,39 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
           return (
             <div className="flex-1 overflow-y-auto space-y-6 pr-1 custom-scrollbar">
               
+              {/* AI Sound Generator Highlight Banner */}
+              {onOpenSoundGenerator && (
+                <div className="p-4 bg-gradient-to-r from-indigo-950/80 via-purple-950/80 to-slate-900 border border-indigo-500/40 rounded-2xl shadow-xl flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center text-indigo-300 shrink-0 shadow-inner">
+                      <Sparkles className="w-5 h-5 animate-pulse text-indigo-300" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-white">AI Sound Generator</span>
+                        <span className="px-1.5 py-0.2 bg-indigo-500/30 text-indigo-200 text-[9px] rounded-full font-bold">
+                          Gemini 3.7
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 mt-0.5 truncate">
+                        Synthesize ambient soundscapes & binaural beats for your tasks & notes
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenSoundGenerator();
+                    }}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition shrink-0 shadow-md"
+                  >
+                    Generate
+                  </button>
+                </div>
+              )}
+
               {/* Notification Chime Customizer */}
               <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-3">
                 <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center justify-between">
@@ -1223,6 +1527,124 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-indigo-500"
                   />
                 </div>
+              </div>
+            </div>
+
+            {/* Auto-Pause & Focus Accuracy Protection */}
+            <div className="border-t border-slate-800 pt-4">
+              <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider mb-2 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  Focus Accuracy & Auto-Pause
+                </span>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-semibold px-2 py-0.5 rounded-full">
+                  Accurate Logging
+                </span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
+                Automatically pause the focus timer when you navigate away or leave your desk, ensuring focus analytics and streaks reflect genuine deep work.
+              </p>
+
+              <div className="space-y-2.5 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80">
+                <label className="flex items-center justify-between cursor-pointer group select-none">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-200 group-hover:text-white block">
+                      Tab Switch Auto-Pause
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Pause immediately when switching browser tabs
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={config.method.autoPauseOnTabSwitch ?? config.appearance?.autoPauseOnTabSwitch ?? true}
+                    onChange={(e) =>
+                      onChangeConfig({
+                        ...config,
+                        method: {
+                          ...config.method,
+                          autoPauseOnTabSwitch: e.target.checked,
+                        },
+                        appearance: {
+                          ...config.appearance,
+                          autoPauseOnTabSwitch: e.target.checked,
+                        },
+                      })
+                    }
+                    className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between cursor-pointer group select-none pt-2 border-t border-slate-800/60">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-200 group-hover:text-white block">
+                      Idle Activity Auto-Pause
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Pause when no mouse/keyboard activity is detected
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={config.method.autoPauseOnIdle ?? config.appearance?.autoPauseOnIdle ?? true}
+                    onChange={(e) =>
+                      onChangeConfig({
+                        ...config,
+                        method: {
+                          ...config.method,
+                          autoPauseOnIdle: e.target.checked,
+                        },
+                        appearance: {
+                          ...config.appearance,
+                          autoPauseOnIdle: e.target.checked,
+                        },
+                      })
+                    }
+                    className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
+                  />
+                </label>
+
+                {(config.method.autoPauseOnIdle ?? config.appearance?.autoPauseOnIdle ?? true) && (
+                  <div className="pt-2 border-t border-slate-800/60">
+                    <div className="flex justify-between text-[11px] text-slate-300 mb-1.5">
+                      <span>Inactivity Threshold</span>
+                      <span className="font-mono text-emerald-400 font-bold">
+                        {config.method.idleTimeoutMinutes ?? config.appearance?.idleTimeoutMinutes ?? 5} minutes
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      {[2, 5, 10, 15].map((mins) => {
+                        const current = config.method.idleTimeoutMinutes ?? config.appearance?.idleTimeoutMinutes ?? 5;
+                        return (
+                          <button
+                            key={mins}
+                            type="button"
+                            onClick={() =>
+                              onChangeConfig({
+                                ...config,
+                                method: {
+                                  ...config.method,
+                                  idleTimeoutMinutes: mins,
+                                },
+                                appearance: {
+                                  ...config.appearance,
+                                  idleTimeoutMinutes: mins,
+                                },
+                              })
+                            }
+                            className={`flex-1 py-1.5 text-xs font-semibold rounded-xl border transition ${
+                              current === mins
+                                ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 shadow-sm'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {mins}m
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

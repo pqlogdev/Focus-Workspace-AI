@@ -110,6 +110,9 @@ export interface FocusMethodConfig {
   cyclesBeforeLongBreak: number;
   totalCycles?: number | null; // null = infinite
   stateLabels: StateLabels;
+  autoPauseOnTabSwitch?: boolean; // auto-pause when user switches tabs
+  autoPauseOnIdle?: boolean; // auto-pause on inactivity > 5 min
+  idleTimeoutMinutes?: number; // default 5 minutes
 }
 
 export type TimerStatus = 'PENDING' | 'FOCUS' | 'BREAK' | 'LONG_BREAK' | 'END';
@@ -134,6 +137,7 @@ export interface Task {
   completed: boolean;
   priority?: 'low' | 'medium' | 'high';
   createdAt: string;
+  completedAt?: string;
 }
 
 export interface LayoutConfig {
@@ -183,6 +187,9 @@ export interface WorkspaceAppearanceConfig {
   timerBgTint?: string; // custom background fill/gradient
   timerGlassBlur?: 'none' | 'low' | 'medium' | 'high' | 'ultra';
   timerTransparentGhost?: boolean; // ultra-pure see-through look
+  autoPauseOnTabSwitch?: boolean; // auto-pause when user switches tabs
+  autoPauseOnIdle?: boolean; // auto-pause on inactivity > 5 min
+  idleTimeoutMinutes?: number; // default 5 minutes
 
   // Advanced Music & Audio UI Customization
   musicLayout?: MusicLayout; // standard, compact, pill, mixer_deck
@@ -214,6 +221,15 @@ export interface WorkspaceConfig {
   viewMode?: ViewMode;
 }
 
+export interface TemplateMember {
+  uid: string;
+  email?: string;
+  displayName?: string;
+  photoURL?: string;
+  role?: 'owner' | 'editor' | 'member';
+  addedAt?: string;
+}
+
 export interface Template {
   id: string;
   creatorId: string;
@@ -229,6 +245,12 @@ export interface Template {
   stickyNotes?: StickyNote[];
   notepad?: string;
   isPublic: boolean;
+
+  // Group flag (0 = individual/personal, 1 = group/team) and Member user list (max 5 members)
+  isGroup?: 0 | 1;
+  members?: TemplateMember[]; // Max 5 members stored directly in the template data
+  memberUids?: string[]; // Array of user UIDs for fast indexing and lookups (max 5)
+
   price: number; // 0 = free
   downloadCount: number;
   likesCount?: number;
@@ -255,8 +277,13 @@ export interface FocusLog {
 export interface Streak {
   currentStreak: number;
   longestStreak: number;
-  lastFocusDate: string; // YYYY-MM-DD
+  lastFocusDate: string; // ISO string or YYYY-MM-DD
   milestones: number[];
+  totalFocusDays?: number;
+  streakHistory?: string[]; // Array of YYYY-MM-DD strings for calendar view
+  freezeDaysAvailable?: number;
+  unlockedMilestones?: number[];
+  updatedAt?: string;
 }
 
 export interface Participant {
@@ -266,23 +293,68 @@ export interface Participant {
   currentTask?: string;
   status: 'active' | 'idle' | 'break';
   isHost: boolean;
+  joinedAt?: string;
+}
+
+export interface RoomChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderPhoto?: string;
+  text: string;
+  timestamp: string;
+  isSystem?: boolean;
 }
 
 export interface RoomState {
   id: string;
   hostId: string;
+  hostName?: string;
   code: string;
+  name?: string;
   participants: Participant[];
   sharedTasks: Task[];
-  sharedNotes: StickyNote[];
+  sharedNotes?: StickyNote[];
+  sharedScratchpad?: string;
+  chatMessages?: RoomChatMessage[];
   timerState: {
     status: TimerStatus;
     remainingSeconds: number;
     currentCycle: number;
     isRunning: boolean;
+    lastUpdated?: number;
   };
   votesToSkipBreak: string[]; // participant IDs
-  config: WorkspaceConfig;
+  syncAtmosphere?: boolean;
+  config?: WorkspaceConfig;
+  createdAt?: string;
+}
+
+export interface BinauralConfig {
+  enabled: boolean;
+  frequencyHz: number;
+  waveType: 'gamma' | 'beta' | 'alpha' | 'theta';
+  label: string;
+  volume: number;
+}
+
+export interface SoundscapeRecommendation {
+  id?: string;
+  title: string;
+  moodTag: string;
+  reasoning: string;
+  binauralBeat: BinauralConfig;
+  ambientTracks: Array<{
+    type: 'rain' | 'thunder' | 'fireplace' | 'cafe' | 'forest' | 'waves' | 'crickets' | 'whitenoise';
+    name: string;
+    volume: number;
+    active: boolean;
+  }>;
+  suggestedMusicGenre: string;
+  suggestedMusicTrackIndex?: number;
+  musicVolume: number;
+  masterAmbientVolume: number;
+  createdAt?: string;
 }
 
 export interface UserProfile {

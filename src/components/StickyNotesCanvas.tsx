@@ -636,110 +636,100 @@ export const StickyNotesCanvas: React.FC<StickyNotesCanvasProps> = ({ notes, onC
               <div className="flex items-center gap-1.5">
                 <GripHorizontal
                   className={`w-3.5 h-3.5 ${
-                    note.isPinned ? 'opacity-20' : 'opacity-50 hover:opacity-100 text-slate-700'
+                    note.isPinned ? 'opacity-20' : 'opacity-40 hover:opacity-100 text-slate-700'
                   }`}
                 />
 
                 <button
+                  type="button"
                   onClick={() => updateNote(note.id, { isPinned: !note.isPinned })}
                   className={`p-1 rounded transition ${
                     note.isPinned
-                      ? 'text-indigo-600 bg-indigo-500/10 font-bold opacity-100'
-                      : 'opacity-50 hover:opacity-100 hover:bg-black/10'
+                      ? 'text-indigo-600 bg-indigo-500/15 font-bold opacity-100'
+                      : 'opacity-40 hover:opacity-100 hover:bg-black/10'
                   }`}
-                  title={note.isPinned ? 'Pinned (Click to unpin and drag)' : 'Pin in position'}
+                  title={note.isPinned ? 'Pinned (Click to unpin)' : 'Pin note'}
                 >
                   <Pin className="w-3 h-3" />
                 </button>
-
-                {/* Color Selector Dots & Custom Picker Trigger */}
-                <div className="flex items-center gap-1 ml-0.5">
-                  {COLOR_OPTIONS.map((col) => (
-                    <button
-                      key={col.name}
-                      onClick={() => updateNote(note.id, { color: col.name })}
-                      className={`w-2.5 h-2.5 rounded-full border border-black/20 hover:scale-125 transition ${
-                        col.bg.split(' ')[0]
-                      } ${note.color === col.name ? 'ring-1 ring-black/40 scale-110' : 'opacity-70'}`}
-                      title={col.name}
-                    />
-                  ))}
-                  <div className="relative">
-                    <button
-                      onClick={() => setActiveColorPickerNoteId(activeColorPickerNoteId === note.id ? null : note.id)}
-                      className={`p-0.5 rounded hover:bg-black/10 transition text-slate-700 ${
-                        activeColorPickerNoteId === note.id ? 'bg-indigo-500/20 text-indigo-600' : 'opacity-60'
-                      }`}
-                      title="Custom Hex / Gradient Color"
-                    >
-                      <Palette className="w-2.5 h-2.5" />
-                    </button>
-                    {activeColorPickerNoteId === note.id && (
-                      <div className="absolute left-0 top-full mt-2 z-50 w-72 bg-slate-950 border border-slate-800 rounded-2xl p-3.5 shadow-2xl backdrop-blur-2xl text-left">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-bold text-slate-300">Custom Note Color</span>
-                          <button
-                            onClick={() => setActiveColorPickerNoteId(null)}
-                            className="text-[10px] text-slate-400 hover:text-white"
-                          >
-                            Done
-                          </button>
-                        </div>
-                        <ColorPickerControl
-                          value={note.color.startsWith('#') || note.color.includes('gradient') ? note.color : '#fef08a'}
-                          onChange={(c) => updateNote(note.id, { color: c })}
-                          allowGradients={true}
-                        />
-                      </div>
-                    )}
-                  </div>
-                </div>
               </div>
 
               {/* Right Action Icons in Header */}
               <div className="flex items-center gap-1">
-                {/* Attach / Image Button */}
+                {/* Palette Popover */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setActiveColorPickerNoteId(activeColorPickerNoteId === note.id ? null : note.id)}
+                    className={`p-1 rounded transition text-slate-700 ${
+                      activeColorPickerNoteId === note.id ? 'bg-black/10 opacity-100' : 'opacity-50 hover:opacity-100 hover:bg-black/10'
+                    }`}
+                    title="Change Note Color"
+                  >
+                    <Palette className="w-3 h-3" />
+                  </button>
+                  {activeColorPickerNoteId === note.id && (
+                    <div
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="absolute right-0 top-full mt-2 z-50 w-72 bg-slate-950 border border-slate-800 rounded-2xl p-3.5 shadow-2xl backdrop-blur-2xl text-left"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-bold text-slate-300">Choose Note Color</span>
+                        <button
+                          type="button"
+                          onClick={() => setActiveColorPickerNoteId(null)}
+                          className="text-[10px] text-slate-400 hover:text-white"
+                        >
+                          Done
+                        </button>
+                      </div>
+
+                      {/* Quick preset swatches */}
+                      <div className="flex items-center gap-1.5 mb-3 pb-2.5 border-b border-slate-800">
+                        {COLOR_OPTIONS.map((col) => (
+                          <button
+                            key={col.name}
+                            type="button"
+                            onClick={() => updateNote(note.id, { color: col.name })}
+                            className={`w-5 h-5 rounded-full border border-black/20 hover:scale-110 transition ${
+                              col.bg.split(' ')[0]
+                            } ${note.color === col.name ? 'ring-2 ring-indigo-500 scale-110' : ''}`}
+                            title={col.name}
+                          />
+                        ))}
+                      </div>
+
+                      <ColorPickerControl
+                        value={note.color.startsWith('#') || note.color.includes('gradient') ? note.color : '#fef08a'}
+                        onChange={(c) => updateNote(note.id, { color: c })}
+                        allowGradients={true}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Attach Image Button */}
                 <button
+                  type="button"
                   onClick={() => {
                     setActiveAttachMenuId(isAttachOpen ? null : note.id);
                     setImageUrlInput('');
                   }}
-                  className={`p-1 rounded transition flex items-center gap-0.5 text-[11px] ${
+                  className={`p-1 rounded transition ${
                     note.imageUrl
                       ? 'text-indigo-600 bg-indigo-500/15 font-semibold opacity-100'
-                      : 'opacity-60 hover:opacity-100 hover:bg-black/10'
+                      : 'opacity-50 hover:opacity-100 hover:bg-black/10'
                   }`}
-                  title={note.imageUrl ? 'Manage Image' : 'Attach Image (or press Ctrl+V / ⌘V)'}
+                  title={note.imageUrl ? 'Manage Attached Image' : 'Attach Image'}
                 >
                   <ImageIcon className="w-3 h-3" />
                 </button>
 
-                {/* Quick Size Preset Menu Button */}
-                <div className="relative group/size">
-                  <button
-                    className="p-1 opacity-50 hover:opacity-100 hover:bg-black/10 rounded transition"
-                    title="Preset Sizes"
-                  >
-                    <Crop className="w-3 h-3" />
-                  </button>
-                  <div className="absolute right-0 top-full mt-1 hidden group-hover/size:flex flex-col bg-slate-900 text-slate-200 border border-slate-700 rounded-xl p-1 shadow-2xl z-50 w-28 text-xs backdrop-blur-xl">
-                    <span className="px-2 py-0.5 text-[9px] uppercase font-bold text-slate-400">Presets</span>
-                    {PRESET_SIZES.map((sz) => (
-                      <button
-                        key={sz.label}
-                        onClick={() => updateNote(note.id, { width: sz.width, height: sz.height })}
-                        className="px-2 py-1 text-left rounded-lg hover:bg-slate-800 text-[11px] hover:text-white transition flex justify-between items-center"
-                      >
-                        <span>{sz.label}</span>
-                        <span className="text-[9px] text-slate-500">{sz.width}×{sz.height}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+                {/* Delete Note */}
                 <button
+                  type="button"
                   onClick={() => deleteNote(note.id)}
-                  className="p-1 opacity-50 hover:opacity-100 text-rose-600 hover:bg-rose-500/15 rounded transition"
+                  className="p-1 opacity-40 hover:opacity-100 text-rose-600 hover:bg-rose-500/15 rounded transition"
                   title="Delete Note"
                 >
                   <Trash2 className="w-3 h-3" />

@@ -421,7 +421,16 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       });
 
       const data = await res.json();
-      if (data.text) {
+      if (res.status === 429 || data.isRateLimit) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            sender: 'ai',
+            text: '⚠️ **API Rate Limit Exceeded (429)**: The Gemini API quota has been temporarily reached for this period.\n\n• Please wait a short moment (usually 30–60s) before trying again.\n• You can also check your API key and quotas in the project **Settings > Secrets** panel.',
+          },
+        ]);
+      } else if (data.text) {
         const sources = data.groundingChunks?.map((c: any) => ({
           title: c.web?.title || c.web?.uri,
           url: c.web?.uri,
@@ -434,11 +443,16 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
           sources,
         };
         setMessages((prev) => [...prev, aiMsg]);
+      } else if (data.error) {
+        setMessages((prev) => [
+          ...prev,
+          { id: `err-${Date.now()}`, sender: 'ai', text: data.error },
+        ]);
       }
     } catch {
       setMessages((prev) => [
         ...prev,
-        { id: `err-${Date.now()}`, sender: 'ai', text: 'Sorry, I encountered an issue. Please try again.' },
+        { id: `err-${Date.now()}`, sender: 'ai', text: 'Sorry, I encountered a connection issue. Please wait a moment and try again.' },
       ]);
     } finally {
       setLoading(false);
@@ -475,116 +489,38 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={() => {
-          // Double-click title bar to toggle dock to header
-          if (position?.y === 12) {
+          if (position) {
             setPosition(null);
             localStorage.removeItem('airiser_ai_chat_position');
-          } else {
-            setPosition({ x: position?.x ?? (window.innerWidth - (size.width + 24)), y: 12 });
           }
         }}
-        className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3 cursor-grab active:cursor-grabbing select-none"
-        title="Drag anywhere (including header area) • Double-click to dock to header"
+        className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3 cursor-grab active:cursor-grabbing select-none"
+        title="Drag AI tutor anywhere • Double-click to reset"
       >
-        <div className="flex items-center gap-2 text-indigo-400">
-          <GripHorizontal className="w-4 h-4 text-slate-500 group-hover:text-indigo-400" />
-          <div className="p-1.5 bg-indigo-500/20 border border-indigo-500/30 rounded-xl">
+        <div className="flex items-center gap-2">
+          <GripHorizontal className="w-4 h-4 text-slate-500 hover:text-indigo-400 transition-colors" />
+          <div className="p-1 bg-indigo-500/15 border border-indigo-500/30 rounded-lg text-indigo-400">
             <Bot className="w-4 h-4" />
           </div>
           <div>
-            <div className="flex items-center gap-1.5">
-              <h3 className="font-bold text-sm text-slate-100">AI Tutor</h3>
-              {position && position.y <= 20 && (
-                <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full font-medium">
-                  Header
-                </span>
-              )}
-            </div>
-            <p className="text-[10px] text-slate-400">Gemini 3.6 Flash</p>
+            <h3 className="font-bold text-sm text-slate-100 leading-none">AI Tutor</h3>
+            <span className="text-[10px] text-slate-500 font-medium">Gemini 3.6 Flash</span>
           </div>
         </div>
 
         <div className="flex items-center gap-1">
-          {/* Quick Size Presets Dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setShowSizeMenu(!showSizeMenu)}
-              className={`p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition text-xs flex items-center gap-1 ${
-                showSizeMenu ? 'bg-indigo-600/30 text-indigo-300 ring-1 ring-indigo-500/40' : ''
-              }`}
-              title="Resize Presets"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-            </button>
-
-            {showSizeMenu && (
-              <div className="absolute right-0 top-full mt-1.5 w-44 bg-slate-950/95 backdrop-blur-2xl border border-slate-800 rounded-2xl p-2 shadow-2xl z-50 text-slate-200 space-y-1 animate-in fade-in zoom-in-95 duration-100">
-                <p className="text-[10px] font-bold text-slate-400 px-2 py-1 uppercase tracking-wider">
-                  Panel Size Presets
-                </p>
-                {[
-                  { label: 'Compact', width: 320, height: 460 },
-                  { label: 'Standard', width: 384, height: 540 },
-                  { label: 'Wide Screen', width: 560, height: 600 },
-                  { label: 'Studio Large', width: 700, height: 680 },
-                ].map((item) => {
-                  const isCurrent = Math.abs(size.width - item.width) < 30 && Math.abs(size.height - item.height) < 40;
-                  return (
-                    <button
-                      key={item.label}
-                      onClick={() => applyPresetSize(item.width, item.height)}
-                      className={`w-full text-left px-2.5 py-1.5 rounded-xl text-xs flex items-center justify-between transition ${
-                        isCurrent
-                          ? 'bg-indigo-600/30 text-indigo-200 font-semibold'
-                          : 'hover:bg-slate-800 text-slate-300'
-                      }`}
-                    >
-                      <span>{item.label}</span>
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {item.width}×{item.height}
-                      </span>
-                    </button>
-                  );
-                })}
-                <div className="border-t border-slate-800 pt-1 mt-1">
-                  <button
-                    onClick={() => {
-                      applyPresetSize(DEFAULT_SIZE.width, DEFAULT_SIZE.height);
-                      setPosition(null);
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-400 hover:text-white hover:bg-slate-800 transition flex items-center gap-1.5"
-                  >
-                    <RotateCcw className="w-3 h-3" /> Reset Size & Pos
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
           {/* Maximize / Restore Toggle */}
           <button
+            type="button"
             onClick={toggleMaximize}
             className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
             title={isMaximized ? 'Restore Default Size' : 'Maximize Panel'}
           >
-            {isMaximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            {isMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
 
-          {/* Reset Position if dragged */}
-          {position && (
-            <button
-              onClick={() => {
-                setPosition(null);
-                localStorage.removeItem('airiser_ai_chat_position');
-              }}
-              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
-              title="Reset AI tutor position"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          )}
-
           <button
+            type="button"
             onClick={onClose}
             className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
             title="Close AI Assistant"

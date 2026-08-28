@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI } from '@google/genai';
@@ -12,7 +13,18 @@ const app = express();
 const PORT = 3000;
 const server = createServer(app);
 
-app.use(express.json());
+// Increase JSON and urlencoded limits for base64 media uploads
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// Ensure public/uploads directory exists
+const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Serve uploaded media statically
+app.use('/uploads', express.static(uploadsDir));
 
 // Initialize Gemini SDK with telemetry header
 const ai = new GoogleGenAI({
@@ -72,6 +84,35 @@ const roomsStore = new Map<string, any>();
 
 // API Routes
 
+// Helper function for resilient Gemini calls with model fallback
+async function generateGeminiContentWithFallback(params: {
+  contents: any;
+  config?: any;
+  primaryModel?: string;
+  fallbackModel?: string;
+}) {
+  const primary = params.primaryModel || 'gemini-3.7-flash';
+  const fallback = params.fallbackModel || 'gemini-3.1-flash-lite';
+
+  try {
+    return await ai.models.generateContent({
+      model: primary,
+      contents: params.contents,
+      config: params.config,
+    });
+  } catch (err: any) {
+    // If rate limit (429) or temporary error, attempt fallback model
+    const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED') || err?.message?.includes('quota');
+    console.warn(`Primary Gemini model (${primary}) failed (RateLimit: ${isRateLimit}). Trying fallback (${fallback})...`);
+    
+    return await ai.models.generateContent({
+      model: fallback,
+      contents: params.contents,
+      config: params.config,
+    });
+  }
+}
+
 // 1. AI Break Reflection Prompt
 app.post('/api/gemini/reflection', async (req, res) => {
   try {
@@ -80,8 +121,7 @@ app.post('/api/gemini/reflection', async (req, res) => {
       ? tasks.map((t: any) => `- ${t.title} (${t.completed ? 'Done' : 'In Progress'})`).join('\n')
       : 'General deep focus session';
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateGeminiContentWithFallback({
       contents: `You are AI Riser, an encouraging focus & mindfulness guide. 
 The user is taking a break during a focus session (${focusMethod || 'Pomodoro'}).
 Current session tasks:
@@ -112,8 +152,7 @@ Provide:
 2. Bullet points of completed milestones
 3. 2 Suggested tasks for the next focus session.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateGeminiContentWithFallback({
       contents: prompt,
     });
 
@@ -145,8 +184,7 @@ app.post('/api/gemini/chat', async (req, res) => {
       ? `Session Context (Tasks being worked on): ${JSON.stringify(context)}\nUser Question: ${message}`
       : message;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateGeminiContentWithFallback({
       contents: fullPrompt,
       config,
     });
@@ -155,7 +193,15 @@ app.post('/api/gemini/chat', async (req, res) => {
     res.json({ text: response.text, groundingChunks });
   } catch (error: any) {
     console.error('Gemini Chat API error:', error);
-    res.status(500).json({ error: 'Failed to generate response. Please try again.' });
+    const isRateLimit = error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED') || error?.message?.includes('quota');
+    if (isRateLimit) {
+      res.status(429).json({
+        error: 'Quota rate limit reached. Please wait a moment before sending another request, or check your API key in Settings > Secrets.',
+        isRateLimit: true,
+      });
+    } else {
+      res.status(500).json({ error: 'Failed to generate response. Please try again.' });
+    }
   }
 });
 
@@ -163,14 +209,132 @@ app.post('/api/gemini/chat', async (req, res) => {
 app.post('/api/gemini/recommendation', async (req, res) => {
   try {
     const { mood, taskType } = req.body;
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateGeminiContentWithFallback({
       contents: `Recommend the ideal lofi atmosphere and ambient sound combo for a user feeling "${mood || 'focused'}" working on "${taskType || 'studying'}". Return a 2-sentence recommendation.`,
     });
 
     res.json({ recommendation: response.text });
   } catch (error: any) {
     res.json({ recommendation: 'Try a Tokyo Neon Rain background paired with gentle rain sound and lofi study beats for maximum flow state.' });
+  }
+});
+
+// 4b. AI Ambient Soundscape Generator (Tasks & Notes grounded)
+app.post('/api/gemini/soundscape', async (req, res) => {
+  try {
+    const { tasks, notes, mood, focusMethod } = req.body;
+
+    const taskSummary = Array.isArray(tasks) && tasks.length > 0
+      ? tasks.map((t: any) => `- [${t.completed ? 'x' : ' '}] ${t.title} (Priority: ${t.priority || 'medium'})`).join('\n')
+      : 'No explicit tasks entered.';
+
+    const notesSummary = notes && typeof notes === 'string' && notes.trim()
+      ? notes.slice(0, 800)
+      : 'No notes entered.';
+
+    const prompt = `You are AI Riser's Master Acoustic Sound Architect and Neuro-Acoustic Productivity Specialist.
+Analyze the user's current cognitive workload, focus method, tasks, notes, and mood intention, and generate an optimal multi-layered ambient soundscape & binaural frequency prescription.
+
+User Workload Details:
+- Active Focus Method: ${focusMethod || 'Pomodoro'}
+- User Mood / Style Intention: ${mood || 'Auto-detect from tasks'}
+- Current Active Tasks:
+${taskSummary}
+- Recent Focus Notes & Thoughts:
+${notesSummary}
+
+Ambient Sound Catalog available:
+- rain (Gentle soothing rainfall)
+- thunder (Distant rolling thunder)
+- fireplace (Warm crackling hearth & brown noise)
+- cafe (Tokyo coffee shop murmur & gentle cup clinks)
+- forest (Pine forest breeze & distant birds)
+- waves (Slow rhythmic ocean surf swells)
+- crickets (Serene midnight summer crickets)
+- whitenoise (Analog tape hiss & pink noise)
+
+Binaural Brainwave Frequencies:
+- Gamma (38 - 45 Hz): High-intensity analytical coding, complex problem solving, math
+- Beta (14 - 24 Hz): Active alertness, task execution, fast typing, sprint hustle
+- Alpha (8 - 12 Hz): Creative writing, calm flow state, research, studying
+- Theta (4 - 7 Hz): Deep mindfulness, reflection, stress relief, reading
+
+Return a strictly valid JSON object with the following schema:
+{
+  "title": "A short, atmospheric title for this soundscape (e.g. 'Midnight Rainstorm Laboratory')",
+  "moodTag": "Short 2-3 word tag (e.g. 'Deep Analytical Flow')",
+  "reasoning": "2 concise sentences explaining why this acoustic combination balances the user's current tasks and notes without causing fatigue",
+  "binauralBeat": {
+    "enabled": true or false,
+    "frequencyHz": integer number between 4 and 45,
+    "waveType": "gamma" | "beta" | "alpha" | "theta",
+    "label": "e.g. 40Hz Gamma Focus",
+    "volume": float between 0.15 and 0.50
+  },
+  "ambientTracks": [
+    {
+      "type": "rain" | "thunder" | "fireplace" | "cafe" | "forest" | "waves" | "crickets" | "whitenoise",
+      "name": "Display name",
+      "volume": float between 0.1 and 0.8,
+      "active": true or false (activate 2 to 4 complementary sounds)
+    }
+  ],
+  "suggestedMusicGenre": "Lofi Chill" | "Cyberpunk Synthwave" | "Minimalist Piano" | "Nature Ambient" | "Binaural Drone",
+  "suggestedMusicTrackIndex": integer 0 to 3,
+  "musicVolume": float between 0.3 and 0.8,
+  "masterAmbientVolume": float between 0.4 and 0.8
+}`;
+
+    const response = await generateGeminiContentWithFallback({
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    let soundscape;
+    try {
+      soundscape = JSON.parse(response.text || '{}');
+    } catch {
+      soundscape = null;
+    }
+
+    if (!soundscape || !soundscape.title) {
+      throw new Error('Invalid soundscape JSON output');
+    }
+
+    res.json({ soundscape });
+  } catch (error: any) {
+    console.warn('Gemini soundscape generation error, returning fallback:', error);
+    // Dynamic contextual fallback soundscape
+    res.json({
+      soundscape: {
+        title: 'Deep Obsidian Flow',
+        moodTag: 'Cognitive Shield',
+        reasoning: 'Calibrated acoustic layers combine gentle rain with warm brown crackle and 40Hz gamma frequency to mask outside noise and center your focus.',
+        binauralBeat: {
+          enabled: true,
+          frequencyHz: 40,
+          waveType: 'gamma',
+          label: '40Hz Gamma Focus',
+          volume: 0.3,
+        },
+        ambientTracks: [
+          { type: 'rain', name: 'Gentle Rain', volume: 0.65, active: true },
+          { type: 'thunder', name: 'Thunderstorm', volume: 0.35, active: true },
+          { type: 'fireplace', name: 'Cozy Fireplace', volume: 0.4, active: false },
+          { type: 'cafe', name: 'Tokyo Cafe', volume: 0.3, active: false },
+          { type: 'forest', name: 'Forest Birds & Wind', volume: 0.4, active: false },
+          { type: 'waves', name: 'Ocean Surf Waves', volume: 0.4, active: false },
+          { type: 'crickets', name: 'Summer Night Crickets', volume: 0.3, active: false },
+          { type: 'whitenoise', name: 'Analog White Noise', volume: 0.25, active: true },
+        ],
+        suggestedMusicGenre: 'Lofi Chill',
+        suggestedMusicTrackIndex: 0,
+        musicVolume: 0.6,
+        masterAmbientVolume: 0.6,
+      },
+    });
   }
 });
 
@@ -194,25 +358,51 @@ app.post('/api/templates', (req, res) => {
 // 6. Realtime Rooms API HTTP Endpoints (Fallback / REST)
 app.post('/api/rooms', (req, res) => {
   const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const room = {
+  const hostId = req.body.hostId || `user-${Date.now()}`;
+  const hostName = req.body.hostName || 'Workspace Host';
+  const hostPhoto = req.body.hostPhoto || undefined;
+  const roomName = req.body.name || `${hostName}'s Study Room`;
+
+  const room: any = {
     id: `room-${Date.now()}`,
     code: roomCode,
-    hostId: req.body.hostId || 'host-1',
+    name: roomName,
+    hostId: hostId,
+    hostName: hostName,
     participants: [{
-      id: req.body.hostId || 'host-1',
-      displayName: req.body.hostName || 'Workspace Host',
+      id: hostId,
+      displayName: hostName,
+      photoURL: hostPhoto,
+      currentTask: req.body.currentGoal || 'Deep Focus',
       status: 'active',
       isHost: true,
+      joinedAt: new Date().toISOString(),
     }],
-    sharedTasks: [],
-    sharedNotes: [],
+    sharedTasks: req.body.initialTasks || [
+      { id: `st-${Date.now()}-1`, title: '🚀 Group Goal: Finish pomodoro cycle', completed: false, priority: 'high' },
+      { id: `st-${Date.now()}-2`, title: '📝 Document session key takeaways', completed: false, priority: 'medium' },
+    ],
+    sharedScratchpad: req.body.initialScratchpad || 'Welcome to our collaborative focus room!\nUse this shared scratchpad for group notes, links, and meeting minutes.',
+    chatMessages: [
+      {
+        id: `msg-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'Focus Room Bot',
+        text: `Room "${roomName}" created by ${hostName}. Share code ${roomCode} with your peers!`,
+        timestamp: new Date().toISOString(),
+        isSystem: true,
+      },
+    ],
     timerState: {
-      status: 'FOCUS',
-      remainingSeconds: 1500,
+      status: req.body.timerStatus || 'FOCUS',
+      remainingSeconds: req.body.remainingSeconds || 1500,
       currentCycle: 1,
       isRunning: false,
+      lastUpdated: Date.now(),
     },
     votesToSkipBreak: [],
+    syncAtmosphere: false,
+    config: req.body.config || undefined,
     createdAt: new Date().toISOString(),
   };
 
@@ -227,6 +417,217 @@ app.get('/api/rooms/:code', (req, res) => {
     return res.status(404).json({ error: 'Room not found' });
   }
   res.json(room);
+});
+
+// 7. Custom Wallpaper & Media Resolvers
+
+/**
+ * Resolve Google Photos, Google Drive, Dropbox, or web media links into direct streamable URLs
+ */
+app.post('/api/media/resolve-url', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+
+    const trimmedUrl = url.trim();
+
+    // 1. Google Photos Link (photos.app.goo.gl or photos.google.com)
+    if (trimmedUrl.includes('photos.app.goo.gl') || trimmedUrl.includes('photos.google.com')) {
+      try {
+        const response = await fetch(trimmedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          },
+          redirect: 'follow',
+        });
+
+        const html = await response.text();
+
+        // Extract og:video or og:image
+        const ogVideoMatch = html.match(/property="og:video" content="([^"]+)"/) || html.match(/name="twitter:player:stream" content="([^"]+)"/);
+        const ogImageMatch = html.match(/property="og:image" content="([^"]+)"/) || html.match(/name="twitter:image" content="([^"]+)"/);
+
+        let directUrl = '';
+        let isVideo = false;
+
+        if (ogVideoMatch && ogVideoMatch[1]) {
+          directUrl = ogVideoMatch[1];
+          isVideo = true;
+        } else if (ogImageMatch && ogImageMatch[1]) {
+          directUrl = ogImageMatch[1];
+          // Upgrade Google Photos thumbnail size parameter to high-res 4K/2K wallpaper
+          if (directUrl.includes('googleusercontent.com')) {
+            directUrl = directUrl.replace(/=w\d+-h\d+[^"]*/, '=w2560-h1440-no');
+          }
+        } else {
+          // Fallback regex to search for lh3.googleusercontent.com
+          const lh3Match = html.match(/(https:\/\/lh3\.googleusercontent\.com\/[a-zA-Z0-9_\-]+)/);
+          if (lh3Match && lh3Match[1]) {
+            directUrl = `${lh3Match[1]}=w2560-h1440-no`;
+          }
+        }
+
+        if (directUrl) {
+          return res.json({
+            success: true,
+            directUrl,
+            thumbnailUrl: directUrl,
+            type: isVideo ? 'video' : 'image',
+            title: 'Google Photos Wallpaper',
+            source: 'google_photos',
+          });
+        }
+      } catch (gPhotosErr) {
+        console.warn('Google Photos fetch resolution error:', gPhotosErr);
+      }
+    }
+
+    // 2. Google Drive Links (drive.google.com/file/d/ID/view or open?id=ID)
+    const driveMatch = trimmedUrl.match(/drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/);
+    if (driveMatch && driveMatch[1]) {
+      const fileId = driveMatch[1];
+      const directUrl = `https://lh3.googleusercontent.com/u/0/d/${fileId}=w2560-h1440-no`;
+      return res.json({
+        success: true,
+        directUrl,
+        thumbnailUrl: directUrl,
+        type: 'image',
+        title: 'Google Drive Wallpaper',
+        source: 'google_drive',
+      });
+    }
+
+    // 3. Dropbox Links (dropbox.com/... ?dl=0 -> raw=1)
+    if (trimmedUrl.includes('dropbox.com')) {
+      const directUrl = trimmedUrl.replace('?dl=0', '?raw=1').replace('&dl=0', '&raw=1');
+      const isVideo = directUrl.includes('.mp4') || directUrl.includes('.webm') || directUrl.includes('.mov');
+      return res.json({
+        success: true,
+        directUrl,
+        thumbnailUrl: isVideo ? undefined : directUrl,
+        type: isVideo ? 'video' : 'image',
+        title: 'Dropbox Wallpaper',
+        source: 'dropbox',
+      });
+    }
+
+    // 4. Direct video URL extensions
+    const isDirectVideo = /\.(mp4|webm|mov|m4v|ogv)(\?.*)?$/i.test(trimmedUrl);
+    if (isDirectVideo) {
+      return res.json({
+        success: true,
+        directUrl: trimmedUrl,
+        type: 'video',
+        title: 'Custom Video Wallpaper',
+        source: 'custom_url',
+      });
+    }
+
+    // 5. Direct image URL or generic web URL
+    return res.json({
+      success: true,
+      directUrl: trimmedUrl,
+      thumbnailUrl: trimmedUrl,
+      type: 'image',
+      title: 'Custom Image Wallpaper',
+      source: 'custom_url',
+    });
+  } catch (error: any) {
+    console.error('Media resolve error:', error);
+    res.status(500).json({ error: error.message || 'Failed to resolve media URL' });
+  }
+});
+
+/**
+ * Upload Image or Video directly and save to storage
+ */
+app.post('/api/media/upload', async (req, res) => {
+  try {
+    const { fileData, fileName, fileType } = req.body;
+
+    if (!fileData) {
+      return res.status(400).json({ error: 'fileData (base64) is required' });
+    }
+
+    // Extract mime type and base64 payload
+    let mimeType = fileType || 'image/jpeg';
+    let base64Content = fileData;
+
+    const dataUrlMatch = fileData.match(/^data:([^;]+);base64,(.+)$/);
+    if (dataUrlMatch) {
+      mimeType = dataUrlMatch[1];
+      base64Content = dataUrlMatch[2];
+    }
+
+    const isVideo = mimeType.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(fileName || '');
+    const isImage = mimeType.startsWith('image/') || /\.(png|jpg|jpeg|webp|gif|svg|avif)$/i.test(fileName || '');
+
+    if (!isVideo && !isImage) {
+      return res.status(400).json({ error: 'Only image and video files are supported' });
+    }
+
+    const buffer = Buffer.from(base64Content, 'base64');
+    const timestamp = Date.now();
+    const cleanName = (fileName || 'wallpaper').replace(/[^a-zA-Z0-9.-]/g, '_');
+    const finalFileName = `${timestamp}-${cleanName}`;
+    const filePath = path.join(uploadsDir, finalFileName);
+
+    await fs.promises.writeFile(filePath, buffer);
+
+    const publicUrl = `/uploads/${finalFileName}`;
+
+    res.json({
+      success: true,
+      url: publicUrl,
+      thumbnailUrl: isVideo ? undefined : publicUrl,
+      title: fileName || (isVideo ? 'Uploaded Video Wallpaper' : 'Uploaded Image Wallpaper'),
+      type: isVideo ? 'video' : 'image',
+      size: buffer.length,
+      mimeType,
+      source: 'upload',
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Media upload error:', error);
+    res.status(500).json({ error: error.message || 'Failed to upload media file' });
+  }
+});
+
+/**
+ * Proxy media streams or images to bypass CORS or referer restrictions
+ */
+app.get('/api/media/proxy', async (req, res) => {
+  try {
+    const targetUrl = req.query.url as string;
+    if (!targetUrl) {
+      return res.status(400).send('Target URL required');
+    }
+
+    const fetchRes = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+      },
+    });
+
+    if (!fetchRes.ok) {
+      return res.status(fetchRes.status).send('Failed to fetch upstream media');
+    }
+
+    const contentType = fetchRes.headers.get('content-type') || 'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    const arrayBuffer = await fetchRes.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error: any) {
+    console.error('Proxy media error:', error);
+    res.status(500).send('Proxy error');
+  }
 });
 
 // Setup WebSocket for Realtime Synchronization
@@ -244,6 +645,7 @@ const roomSockets = new Map<string, Set<WebSocket>>();
 
 wss.on('connection', (ws: WebSocket) => {
   let currentRoomCode: string | null = null;
+  let currentParticipantId: string | null = null;
 
   ws.on('message', (message: string) => {
     try {
@@ -251,6 +653,8 @@ wss.on('connection', (ws: WebSocket) => {
 
       if (data.type === 'JOIN_ROOM') {
         currentRoomCode = data.roomCode.toUpperCase();
+        currentParticipantId = data.participant?.id || null;
+
         if (!roomSockets.has(currentRoomCode)) {
           roomSockets.set(currentRoomCode, new Set());
         }
@@ -258,18 +662,61 @@ wss.on('connection', (ws: WebSocket) => {
 
         let room = roomsStore.get(currentRoomCode);
         if (room && data.participant) {
-          const exists = room.participants.some((p: any) => p.id === data.participant.id);
-          if (!exists) {
-            room.participants.push(data.participant);
+          const existingIndex = room.participants.findIndex((p: any) => p.id === data.participant.id);
+          if (existingIndex >= 0) {
+            room.participants[existingIndex] = {
+              ...room.participants[existingIndex],
+              ...data.participant,
+              status: 'active',
+            };
+          } else {
+            room.participants.push({
+              ...data.participant,
+              status: 'active',
+              joinedAt: new Date().toISOString(),
+            });
+
+            // Add system join message
+            if (!room.chatMessages) room.chatMessages = [];
+            room.chatMessages.push({
+              id: `msg-join-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+              senderId: 'system',
+              senderName: 'Focus Room Bot',
+              text: `${data.participant.displayName || 'A participant'} joined the focus room.`,
+              timestamp: new Date().toISOString(),
+              isSystem: true,
+            });
           }
         }
 
         // Broadcast room update
         broadcastRoomUpdate(currentRoomCode);
+      } else if (data.type === 'LEAVE_ROOM' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room && data.participantId) {
+          const leavingUser = room.participants.find((p: any) => p.id === data.participantId);
+          room.participants = room.participants.filter((p: any) => p.id !== data.participantId);
+          if (leavingUser) {
+            if (!room.chatMessages) room.chatMessages = [];
+            room.chatMessages.push({
+              id: `msg-leave-${Date.now()}`,
+              senderId: 'system',
+              senderName: 'Focus Room Bot',
+              text: `${leavingUser.displayName} left the room.`,
+              timestamp: new Date().toISOString(),
+              isSystem: true,
+            });
+          }
+        }
+        broadcastRoomUpdate(currentRoomCode);
       } else if (data.type === 'UPDATE_TIMER' && currentRoomCode) {
         let room = roomsStore.get(currentRoomCode);
         if (room) {
-          room.timerState = { ...room.timerState, ...data.timerState };
+          room.timerState = {
+            ...room.timerState,
+            ...data.timerState,
+            lastUpdated: Date.now(),
+          };
           broadcastRoomUpdate(currentRoomCode);
         }
       } else if (data.type === 'EMOJI_REACTION' && currentRoomCode) {
@@ -277,22 +724,114 @@ wss.on('connection', (ws: WebSocket) => {
           type: 'EMOJI_REACTION',
           emoji: data.emoji,
           senderName: data.senderName,
+          senderId: data.senderId,
         });
+      } else if (data.type === 'SEND_CHAT' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room && data.message) {
+          if (!room.chatMessages) room.chatMessages = [];
+          const newMsg = {
+            id: data.message.id || `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            senderId: data.message.senderId || 'anon',
+            senderName: data.message.senderName || 'Member',
+            senderPhoto: data.message.senderPhoto || undefined,
+            text: data.message.text || '',
+            timestamp: data.message.timestamp || new Date().toISOString(),
+            isSystem: false,
+          };
+          room.chatMessages.push(newMsg);
+          // Keep last 100 messages
+          if (room.chatMessages.length > 100) {
+            room.chatMessages = room.chatMessages.slice(-100);
+          }
+          broadcastRoomUpdate(currentRoomCode);
+        }
       } else if (data.type === 'UPDATE_TASKS' && currentRoomCode) {
         let room = roomsStore.get(currentRoomCode);
         if (room) {
           room.sharedTasks = data.tasks;
           broadcastRoomUpdate(currentRoomCode);
         }
+      } else if (data.type === 'TOGGLE_TASK' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room && data.taskId) {
+          const task = (room.sharedTasks || []).find((t: any) => t.id === data.taskId);
+          if (task) {
+            task.completed = !task.completed;
+            if (data.actorName) {
+              if (!room.chatMessages) room.chatMessages = [];
+              room.chatMessages.push({
+                id: `msg-task-${Date.now()}`,
+                senderId: 'system',
+                senderName: 'Task Sync',
+                text: `${data.actorName} marked "${task.title}" as ${task.completed ? 'completed ✓' : 'in progress'}.`,
+                timestamp: new Date().toISOString(),
+                isSystem: true,
+              });
+            }
+          }
+          broadcastRoomUpdate(currentRoomCode);
+        }
+      } else if (data.type === 'ADD_TASK' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room && data.task) {
+          if (!room.sharedTasks) room.sharedTasks = [];
+          room.sharedTasks.push(data.task);
+          broadcastRoomUpdate(currentRoomCode);
+        }
+      } else if (data.type === 'UPDATE_SCRATCHPAD' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room) {
+          room.sharedScratchpad = data.scratchpad;
+          broadcastRoomUpdate(currentRoomCode);
+        }
+      } else if (data.type === 'UPDATE_PARTICIPANT' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room && data.participantId) {
+          const participant = (room.participants || []).find((p: any) => p.id === data.participantId);
+          if (participant) {
+            if (data.currentTask !== undefined) participant.currentTask = data.currentTask;
+            if (data.status !== undefined) participant.status = data.status;
+            if (data.displayName !== undefined) participant.displayName = data.displayName;
+          }
+          broadcastRoomUpdate(currentRoomCode);
+        }
+      } else if (data.type === 'SYNC_ATMOSPHERE' && currentRoomCode) {
+        let room = roomsStore.get(currentRoomCode);
+        if (room && data.config) {
+          room.config = data.config;
+          room.syncAtmosphere = true;
+          if (!room.chatMessages) room.chatMessages = [];
+          room.chatMessages.push({
+            id: `msg-atmo-${Date.now()}`,
+            senderId: 'system',
+            senderName: 'Atmosphere Sync',
+            text: `Host updated room atmosphere & background.`,
+            timestamp: new Date().toISOString(),
+            isSystem: true,
+          });
+          broadcastRoomUpdate(currentRoomCode);
+        }
       } else if (data.type === 'VOTE_SKIP' && currentRoomCode) {
         let room = roomsStore.get(currentRoomCode);
         if (room) {
+          if (!room.votesToSkipBreak) room.votesToSkipBreak = [];
           if (!room.votesToSkipBreak.includes(data.participantId)) {
             room.votesToSkipBreak.push(data.participantId);
           }
           if (room.votesToSkipBreak.length >= Math.ceil(room.participants.length / 2)) {
             room.timerState.status = 'FOCUS';
+            room.timerState.remainingSeconds = 1500;
             room.votesToSkipBreak = [];
+            if (!room.chatMessages) room.chatMessages = [];
+            room.chatMessages.push({
+              id: `msg-vote-${Date.now()}`,
+              senderId: 'system',
+              senderName: 'Focus Room Bot',
+              text: `Majority voted to skip break. Returning to FOCUS mode!`,
+              timestamp: new Date().toISOString(),
+              isSystem: true,
+            });
           }
           broadcastRoomUpdate(currentRoomCode);
         }

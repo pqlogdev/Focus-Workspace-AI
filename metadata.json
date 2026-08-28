@@ -1,6 +1,6 @@
 {
   "name": "Focus Workspace",
-  "description": "Community-first focus workspace platform with customizable lofi backgrounds, layered audio, focus timer, sticky notes, templates, and real-time sessions.",
+  "description": "Community-first focus workspace platform with customizable lofi backgrounds, drag-and-drop media upload, Google Photos / video integration, layered audio, focus timer, templates, and cloud synchronization.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

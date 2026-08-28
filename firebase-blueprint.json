@@ -30,7 +30,7 @@
     },
     "Template": {
       "title": "Workspace Template",
-      "description": "Public or private reusable focus workspace setup",
+      "description": "Personal (isGroup: 0) or Group/Team (isGroup: 1, max 5 members stored in template data) reusable focus workspace setup",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -47,6 +47,9 @@
         "stickyNotes": { "type": "array" },
         "notepad": { "type": "string" },
         "isPublic": { "type": "boolean" },
+        "isGroup": { "type": "number", "description": "0 = individual/personal template, 1 = group template" },
+        "members": { "type": "array", "description": "Array of member objects (maximum 5 members) stored directly in template data" },
+        "memberUids": { "type": "array", "description": "Array of user UIDs (maximum 5) for querying" },
         "price": { "type": "number" },
         "downloadCount": { "type": "number" },
         "likesCount": { "type": "number" },
@@ -89,6 +92,36 @@
         "reason": { "type": "string" }
       },
       "required": ["id", "timestamp", "config"]
+    },
+    "Streak": {
+      "title": "User Focus Streak",
+      "description": "Daily consecutive focus streak records, milestone unlocks, and activity history belonging to the user",
+      "type": "object",
+      "properties": {
+        "currentStreak": { "type": "number" },
+        "longestStreak": { "type": "number" },
+        "lastFocusDate": { "type": "string" },
+        "totalFocusDays": { "type": "number" },
+        "milestones": { "type": "array" },
+        "streakHistory": { "type": "array" },
+        "freezeDaysAvailable": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["currentStreak", "longestStreak", "lastFocusDate"]
+    },
+    "FocusLog": {
+      "title": "Focus Log Record",
+      "description": "Historical focus duration, session counts, and task completion records per day",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "totalFocusTime": { "type": "number" },
+        "tasksCompleted": { "type": "number" },
+        "methodUsed": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "date", "totalFocusTime"]
     }
   },
   "firestore": {

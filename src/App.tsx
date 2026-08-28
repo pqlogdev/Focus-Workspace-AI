@@ -6,6 +6,7 @@ import {
   signOut as firebaseSignOut,
   loadUserDataFromCloud,
   saveUserDataToCloud,
+  saveUserStreak,
   saveCustomImagesToCloud,
   saveRollbackSnapshotToCloud,
   clearRollbackSnapshotFromCloud,
@@ -29,7 +30,7 @@ import {
   DEFAULT_NOTEPAD,
 } from './data/defaultWorkspace';
 import { PRESET_BACKGROUNDS, PRESET_BREAK_BACKGROUNDS } from './data/presetBackgrounds';
-import { safeLocalStorageSet } from './utils/storage';
+import { safeLocalStorageSet, safeLocalStorageGet, safeLocalStorageJSONGet } from './utils/storage';
 import { BackgroundLayer } from './components/BackgroundLayer';
 import { AudioPlayer } from './components/AudioPlayer';
 import { TimerWidget } from './components/TimerWidget';
@@ -41,51 +42,240 @@ import { TemplateModal } from './components/TemplateModal';
 import { MarketplaceModal } from './components/MarketplaceModal';
 import { StatsAnalyticsModal } from './components/StatsAnalyticsModal';
 import { RealtimeRoomModal } from './components/RealtimeRoomModal';
+import { LiveRoomFloatingBar } from './components/LiveRoomFloatingBar';
 import { AiAssistantPanel } from './components/AiAssistantPanel';
+import { AiSoundGeneratorModal } from './components/AiSoundGeneratorModal';
 import { CustomizerDrawer } from './components/CustomizerDrawer';
 import { FloatingWorkspaceBadge } from './components/FloatingWorkspaceBadge';
 import { LandingPage } from './components/LandingPage';
-import { Sparkles as SparklesIcon, Undo2, RotateCcw, X as CloseIcon, ShieldCheck } from 'lucide-react';
+import { Sparkles as SparklesIcon, Undo2, RotateCcw, X as CloseIcon, ShieldCheck, Flame } from 'lucide-react';
 
 export function App() {
-  // 1. Core Workspace Config State
-  const [config, setConfig] = useState<WorkspaceConfig>(DEFAULT_WORKSPACE_CONFIG);
+  // 1. Core Workspace Config State (Persisted across refreshes & hard refreshes)
+  const [config, setConfig] = useState<WorkspaceConfig>(() => {
+    const saved = safeLocalStorageJSONGet<WorkspaceConfig | null>('airiser_workspace_config', null);
+    if (saved && typeof saved === 'object') {
+      return {
+        ...DEFAULT_WORKSPACE_CONFIG,
+        ...saved,
+        background: {
+          ...DEFAULT_WORKSPACE_CONFIG.background,
+          ...(saved.background || {}),
+        },
+        audio: {
+          ...DEFAULT_WORKSPACE_CONFIG.audio,
+          ...(saved.audio || {}),
+        },
+        method: {
+          ...DEFAULT_WORKSPACE_CONFIG.method,
+          ...(saved.method || {}),
+        },
+        appearance: {
+          ...DEFAULT_WORKSPACE_CONFIG.appearance,
+          ...(saved.appearance || {}),
+        },
+        layout: {
+          ...DEFAULT_WORKSPACE_CONFIG.layout,
+          ...(saved.layout || {}),
+        },
+      };
+    }
+    return DEFAULT_WORKSPACE_CONFIG;
+  });
 
   // 2. Timer & View Mode State
-  const [timerStatus, setTimerStatus] = useState<TimerStatus>('PENDING');
-  const [viewMode, setViewMode] = useState<ViewMode>('fullscreen');
+  const [timerStatus, setTimerStatus] = useState<TimerStatus>(() =>
+    (safeLocalStorageGet('airiser_timer_status', 'PENDING') as TimerStatus) || 'PENDING'
+  );
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    (safeLocalStorageGet('airiser_view_mode', 'fullscreen') as ViewMode) || 'fullscreen'
+  );
 
   // 3. Modals & Sidebars Visibility States
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
   const [customizerInitialTab, setCustomizerInitialTab] = useState<'background' | 'audio' | 'method' | 'appearance'>('background');
   const [activeCustomizingPanel, setActiveCustomizingPanel] = useState<'timer' | 'music' | 'notes' | 'canvas' | null>(null);
-  const [isTasksOpen, setIsTasksOpen] = useState(false);
-  const [isNotesOpen, setIsNotesOpen] = useState(false);
+  const [isTasksOpen, setIsTasksOpen] = useState<boolean>(() =>
+    safeLocalStorageGet('airiser_tasks_open', 'false') === 'true'
+  );
+  const [isNotesOpen, setIsNotesOpen] = useState<boolean>(() =>
+    safeLocalStorageGet('airiser_notes_open', 'false') === 'true'
+  );
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [isMarketplaceOpen, setIsMarketplaceOpen] = useState(false);
   const [isRoomsOpen, setIsRoomsOpen] = useState(false);
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
+  const [isSoundGenOpen, setIsSoundGenOpen] = useState(false);
   const [isBreakModalOpen, setIsBreakModalOpen] = useState(false);
 
+  const [streakToast, setStreakToast] = useState<{ message: string; days: number; isMilestone?: boolean } | null>(null);
+
+  // Helper: Calculate daily streak progression on focus/task activity and persist to database
+  const calculateStreakOnActivity = useCallback((prevStreak: Streak): Streak => {
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+    const lastDateStr = prevStreak.lastFocusDate ? prevStreak.lastFocusDate.split('T')[0] : '';
+
+    const history = Array.isArray(prevStreak.streakHistory) ? [...prevStreak.streakHistory] : [];
+    if (!history.includes(todayStr)) {
+      history.push(todayStr);
+    }
+    const trimmedHistory = history.slice(-60);
+    const totalFocusDays = Math.max(
+      trimmedHistory.length,
+      (prevStreak.totalFocusDays || 0) + (lastDateStr !== todayStr ? 1 : 0)
+    );
+
+    if (!lastDateStr) {
+      // First ever activity recorded
+      const initialStreak: Streak = {
+        currentStreak: 1,
+        longestStreak: Math.max(1, prevStreak.longestStreak || 1),
+        lastFocusDate: now.toISOString(),
+        milestones: prevStreak.milestones || [3, 7, 14, 30, 60, 100],
+        totalFocusDays: 1,
+        streakHistory: trimmedHistory,
+        freezeDaysAvailable: prevStreak.freezeDaysAvailable ?? 1,
+        unlockedMilestones: [1],
+        updatedAt: now.toISOString(),
+      };
+      setStreakToast({ message: '🔥 Focus streak started! Day 1 complete.', days: 1 });
+      return initialStreak;
+    }
+
+    if (lastDateStr === todayStr) {
+      // Activity recorded again today - maintain streak count and update timestamp & history
+      return {
+        ...prevStreak,
+        lastFocusDate: now.toISOString(),
+        totalFocusDays,
+        streakHistory: trimmedHistory,
+        updatedAt: now.toISOString(),
+      };
+    }
+
+    // Calculate calendar day difference
+    const todayDateObj = new Date(todayStr);
+    const lastDateObj = new Date(lastDateStr);
+    const diffDays = Math.round((todayDateObj.getTime() - lastDateObj.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 1) {
+      // Consecutive day: extend streak!
+      const newCurrent = (prevStreak.currentStreak || 0) + 1;
+      const newLongest = Math.max(prevStreak.longestStreak || 0, newCurrent);
+      const allMilestones = prevStreak.milestones || [3, 7, 14, 30, 60, 100];
+      const newlyUnlocked = allMilestones.filter(
+        (m) => newCurrent >= m && !(prevStreak.unlockedMilestones || []).includes(m)
+      );
+      const unlockedMilestones = Array.from(
+        new Set([...(prevStreak.unlockedMilestones || []), ...newlyUnlocked, ...(newCurrent === 1 ? [1] : [])])
+      );
+
+      const isMilestone = newlyUnlocked.length > 0;
+      setStreakToast({
+        message: isMilestone
+          ? `🎉 Milestone Unlocked! 🔥 ${newCurrent}-Day Focus Streak!`
+          : `🔥 Streak Advanced! Day ${newCurrent} achieved!`,
+        days: newCurrent,
+        isMilestone,
+      });
+
+      return {
+        ...prevStreak,
+        currentStreak: newCurrent,
+        longestStreak: newLongest,
+        lastFocusDate: now.toISOString(),
+        totalFocusDays,
+        streakHistory: trimmedHistory,
+        unlockedMilestones,
+        updatedAt: now.toISOString(),
+      };
+    } else {
+      // 2+ days gap: reset streak to 1
+      setStreakToast({
+        message: `🔥 New Streak Started! Day 1 recorded.`,
+        days: 1,
+      });
+
+      return {
+        ...prevStreak,
+        currentStreak: 1,
+        longestStreak: Math.max(prevStreak.longestStreak || 1, 1),
+        lastFocusDate: now.toISOString(),
+        totalFocusDays,
+        streakHistory: trimmedHistory,
+        updatedAt: now.toISOString(),
+      };
+    }
+  }, []);
+
   // 4. Tasks, Notes, Logs & Streaks
-  const [tasks, setTasks] = useState<Task[]>(DEFAULT_TASKS);
-  const [stickyNotes, setStickyNotes] = useState<StickyNote[]>(DEFAULT_STICKY_NOTES);
-  const [notepadContent, setNotepadContent] = useState<string>(DEFAULT_NOTEPAD);
-  const [logs, setLogs] = useState<FocusLog[]>([]);
-  const [streak, setStreak] = useState<Streak>({
-    currentStreak: 1,
-    longestStreak: 1,
-    lastFocusDate: new Date().toISOString(),
-    milestones: [3, 7, 14, 30],
-  });
+  const [tasks, setTasks] = useState<Task[]>(() =>
+    safeLocalStorageJSONGet<Task[]>('airiser_tasks', DEFAULT_TASKS)
+  );
+  const [stickyNotes, setStickyNotes] = useState<StickyNote[]>(() =>
+    safeLocalStorageJSONGet<StickyNote[]>('airiser_sticky_notes', DEFAULT_STICKY_NOTES)
+  );
+  const [notepadContent, setNotepadContent] = useState<string>(() =>
+    safeLocalStorageGet('airiser_notepad', DEFAULT_NOTEPAD)
+  );
+  const [logs, setLogs] = useState<FocusLog[]>(() =>
+    safeLocalStorageJSONGet<FocusLog[]>('airiser_logs', [])
+  );
+  const [streak, setStreak] = useState<Streak>(() =>
+    safeLocalStorageJSONGet<Streak>('airiser_streak', {
+      currentStreak: 1,
+      longestStreak: 1,
+      lastFocusDate: new Date().toISOString(),
+      milestones: [3, 7, 14, 30, 60, 100],
+      totalFocusDays: 1,
+      streakHistory: [new Date().toISOString().split('T')[0]],
+      freezeDaysAvailable: 1,
+    })
+  );
 
   const [roomState, setRoomState] = useState<RoomState | null>(null);
+  const [floatingReactions, setFloatingReactions] = useState<{ id: string; emoji: string; left: number }[]>([]);
+
+  // Check URL for ?room=CODE to auto open or join
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+      setIsRoomsOpen(true);
+    }
+  }, []);
+
+  const handleSendReaction = useCallback((emoji: string) => {
+    const newReaction = {
+      id: `reaction-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      emoji,
+      left: Math.floor(Math.random() * 60) + 20, // 20% to 80% screen width
+    };
+    setFloatingReactions((prev) => [...prev, newReaction]);
+    setTimeout(() => {
+      setFloatingReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
+    }, 2800);
+  }, []);
+
+  // When room is active, synchronize timer if host changes it
+  useEffect(() => {
+    if (roomState?.timerState?.status && roomState.timerState.status !== timerStatus) {
+      setTimerStatus(roomState.timerState.status);
+    }
+  }, [roomState?.timerState?.status]);
 
   // 5. Custom Images Library & Reset / Rollback System State
-  const [customImages, setCustomImages] = useState<CustomImageRecord[]>([]);
-  const [preResetSnapshot, setPreResetSnapshot] = useState<WorkspaceConfig | null>(null);
-  const [rollbackSnapshot, setRollbackSnapshot] = useState<RollbackSnapshot | null>(null);
+  const [customImages, setCustomImages] = useState<CustomImageRecord[]>(() =>
+    safeLocalStorageJSONGet<CustomImageRecord[]>('airiser_custom_images', [])
+  );
+  const [preResetSnapshot, setPreResetSnapshot] = useState<WorkspaceConfig | null>(() =>
+    safeLocalStorageJSONGet<WorkspaceConfig | null>('airiser_prereset_snapshot', null)
+  );
+  const [rollbackSnapshot, setRollbackSnapshot] = useState<RollbackSnapshot | null>(() =>
+    safeLocalStorageJSONGet<RollbackSnapshot | null>('airiser_rollback_snapshot', null)
+  );
   const [rollbackToast, setRollbackToast] = useState<{ message: string; timestamp: number } | null>(null);
 
   // 6. Firebase Auth & Cloud Sync State
@@ -149,16 +339,8 @@ export function App() {
           setIsSyncing(false);
         }
       } else {
-        // Reset local workspace to clean defaults when unauthenticated or signed out
         hasHydratedFromCloud.current = false;
-        setConfig(DEFAULT_WORKSPACE_CONFIG);
-        setTasks(DEFAULT_TASKS);
-        setStickyNotes(DEFAULT_STICKY_NOTES);
-        setNotepadContent(DEFAULT_NOTEPAD);
-        setLogs([]);
-        setCustomImages([]);
-        setPreResetSnapshot(null);
-        setRollbackSnapshot(null);
+        // Keep local state in localStorage intact for offline/unauthenticated mode
       }
     });
 
@@ -226,10 +408,56 @@ export function App() {
   }, [logs, triggerCloudSync, user]);
 
   useEffect(() => {
+    if (!streakToast) return;
+    const timer = setTimeout(() => {
+      setStreakToast(null);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [streakToast]);
+
+  useEffect(() => {
     if (!hasHydratedFromCloud.current && user) return;
     safeLocalStorageSet('airiser_streak', JSON.stringify(streak));
     triggerCloudSync();
   }, [streak, triggerCloudSync, user]);
+
+  useEffect(() => {
+    if (!hasHydratedFromCloud.current && user) return;
+    safeLocalStorageSet('airiser_custom_images', JSON.stringify(customImages));
+    triggerCloudSync();
+  }, [customImages, triggerCloudSync, user]);
+
+  useEffect(() => {
+    safeLocalStorageSet('airiser_view_mode', viewMode);
+  }, [viewMode]);
+
+  useEffect(() => {
+    safeLocalStorageSet('airiser_timer_status', timerStatus);
+  }, [timerStatus]);
+
+  useEffect(() => {
+    safeLocalStorageSet('airiser_tasks_open', String(isTasksOpen));
+  }, [isTasksOpen]);
+
+  useEffect(() => {
+    safeLocalStorageSet('airiser_notes_open', String(isNotesOpen));
+  }, [isNotesOpen]);
+
+  useEffect(() => {
+    if (rollbackSnapshot) {
+      safeLocalStorageSet('airiser_rollback_snapshot', JSON.stringify(rollbackSnapshot));
+    } else {
+      safeLocalStorageSet('airiser_rollback_snapshot', '');
+    }
+  }, [rollbackSnapshot]);
+
+  useEffect(() => {
+    if (preResetSnapshot) {
+      safeLocalStorageSet('airiser_prereset_snapshot', JSON.stringify(preResetSnapshot));
+    } else {
+      safeLocalStorageSet('airiser_prereset_snapshot', '');
+    }
+  }, [preResetSnapshot]);
 
   const handleSignIn = async () => {
     await signInWithGoogle();
@@ -297,32 +525,164 @@ export function App() {
     }
   };
 
-  // Handle cycle completion
-  const handleCompleteCycle = () => {
-    const newLog: FocusLog = {
-      id: `log-${Date.now()}`,
-      date: new Date().toISOString(),
-      totalFocusTime: config.method.workDuration,
-      methodUsed: config.method.type,
-      tasksCompleted: tasks.filter((t) => t.completed).length,
-    };
-    setLogs((prev) => [newLog, ...prev]);
+  // Handle task additions, updates, completions, and deletions with instant analytics and streak synchronization
+  const handleTasksChange = useCallback((newTasks: Task[]) => {
+    // Identify tasks that transitioned to completed
+    const newlyCompleted = newTasks.filter(
+      (nt) => nt.completed && !tasks.find((ot) => ot.id === nt.id && ot.completed)
+    );
 
-    // Update streak
-    const today = new Date().toDateString();
-    const lastDate = new Date(streak.lastFocusDate).toDateString();
-    if (today !== lastDate) {
-      setStreak((prev) => ({
-        ...prev,
-        currentStreak: prev.currentStreak + 1,
-        longestStreak: Math.max(prev.longestStreak, prev.currentStreak + 1),
-        lastFocusDate: new Date().toISOString(),
-      }));
+    const nowIso = new Date().toISOString();
+    const todayStr = nowIso.split('T')[0];
+
+    let processedTasks = newTasks;
+
+    if (newlyCompleted.length > 0) {
+      // 1. Stamp completion timestamp
+      processedTasks = newTasks.map((t) => {
+        if (t.completed && !t.completedAt) {
+          return { ...t, completedAt: nowIso };
+        }
+        return t;
+      });
+
+      // 2. Instantly update or create today's FocusLog
+      setLogs((prevLogs) => {
+        const todayLogIndex = prevLogs.findIndex(
+          (l) => l.date && l.date.startsWith(todayStr)
+        );
+
+        if (todayLogIndex >= 0) {
+          const updated = [...prevLogs];
+          updated[todayLogIndex] = {
+            ...updated[todayLogIndex],
+            tasksCompleted: (updated[todayLogIndex].tasksCompleted || 0) + newlyCompleted.length,
+          };
+          return updated;
+        } else {
+          const newLog: FocusLog = {
+            id: `log-${Date.now()}`,
+            date: nowIso,
+            totalFocusTime: 0,
+            methodUsed: config.method.type,
+            tasksCompleted: newlyCompleted.length,
+          };
+          return [newLog, ...prevLogs];
+        }
+      });
+
+      // 3. Instantly calculate and update daily streak
+      setStreak((prev) => calculateStreakOnActivity(prev));
+    } else {
+      // Handle unchecked tasks
+      const uncompletedTasks = newTasks.filter(
+        (nt) => !nt.completed && tasks.find((ot) => ot.id === nt.id && ot.completed)
+      );
+
+      if (uncompletedTasks.length > 0) {
+        processedTasks = newTasks.map((t) => (!t.completed ? { ...t, completedAt: undefined } : t));
+
+        setLogs((prevLogs) => {
+          const todayLogIndex = prevLogs.findIndex(
+            (l) => l.date && l.date.startsWith(todayStr)
+          );
+          if (todayLogIndex >= 0) {
+            const updated = [...prevLogs];
+            updated[todayLogIndex] = {
+              ...updated[todayLogIndex],
+              tasksCompleted: Math.max(
+                0,
+                (updated[todayLogIndex].tasksCompleted || 0) - uncompletedTasks.length
+              ),
+            };
+            return updated;
+          }
+          return prevLogs;
+        });
+      }
     }
+
+    setTasks(processedTasks);
+  }, [tasks, config.method.type, calculateStreakOnActivity]);
+
+  // Accrue focused seconds incrementally into today's log and streak
+  const handleAccrueFocusTime = useCallback((seconds: number) => {
+    if (seconds <= 0) return;
+    const nowIso = new Date().toISOString();
+    const todayStr = nowIso.split('T')[0];
+
+    setLogs((prevLogs) => {
+      const todayLogIndex = prevLogs.findIndex(
+        (l) => l.date && l.date.startsWith(todayStr)
+      );
+
+      let updatedLogs: FocusLog[];
+      if (todayLogIndex >= 0) {
+        updatedLogs = [...prevLogs];
+        updatedLogs[todayLogIndex] = {
+          ...updatedLogs[todayLogIndex],
+          totalFocusTime: (updatedLogs[todayLogIndex].totalFocusTime || 0) + seconds,
+          methodUsed: config.method.type,
+        };
+      } else {
+        const newLog: FocusLog = {
+          id: `log-${Date.now()}`,
+          date: nowIso,
+          totalFocusTime: seconds,
+          methodUsed: config.method.type,
+          tasksCompleted: tasks.filter((t) => t.completed).length,
+        };
+        updatedLogs = [newLog, ...prevLogs];
+      }
+      safeLocalStorageSet('airiser_logs', JSON.stringify(updatedLogs));
+      return updatedLogs;
+    });
+
+    setStreak((prev) => calculateStreakOnActivity(prev));
+  }, [config.method.type, tasks, calculateStreakOnActivity]);
+
+  // Handle cycle completion
+  const handleCompleteCycle = useCallback(() => {
+    const nowIso = new Date().toISOString();
+    const todayStr = nowIso.split('T')[0];
+
+    setLogs((prevLogs) => {
+      const todayLogIndex = prevLogs.findIndex(
+        (l) => l.date && l.date.startsWith(todayStr)
+      );
+
+      if (todayLogIndex >= 0) {
+        const updated = [...prevLogs];
+        updated[todayLogIndex] = {
+          ...updated[todayLogIndex],
+          methodUsed: config.method.type,
+          tasksCompleted: Math.max(
+            updated[todayLogIndex].tasksCompleted || 0,
+            tasks.filter((t) => t.completed).length
+          ),
+        };
+        safeLocalStorageSet('airiser_logs', JSON.stringify(updated));
+        return updated;
+      } else {
+        const newLog: FocusLog = {
+          id: `log-${Date.now()}`,
+          date: nowIso,
+          totalFocusTime: 0,
+          methodUsed: config.method.type,
+          tasksCompleted: tasks.filter((t) => t.completed).length,
+        };
+        const updated = [newLog, ...prevLogs];
+        safeLocalStorageSet('airiser_logs', JSON.stringify(updated));
+        return updated;
+      }
+    });
+
+    // Update streak for today
+    setStreak((prev) => calculateStreakOnActivity(prev));
 
     // Open break reflection modal
     setIsBreakModalOpen(true);
-  };
+  }, [config.method.type, tasks, calculateStreakOnActivity]);
 
   const handleSaveBreakNote = (note: string) => {
     setNotepadContent((prev) => prev + `\n\n--- Break Note (${new Date().toLocaleTimeString()}) ---\n${note}`);
@@ -635,6 +995,7 @@ export function App() {
         onToggleRooms={() => setIsRoomsOpen(true)}
         onToggleAiChat={() => setIsAiChatOpen(!isAiChatOpen)}
         onToggleZenMode={() => setViewMode(viewMode === 'zen' ? 'fullscreen' : 'zen')}
+        onToggleSoundGenerator={() => setIsSoundGenOpen(true)}
       />
 
       {/* 3. Main Center Focus Canvas Area */}
@@ -648,12 +1009,22 @@ export function App() {
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           onCompleteCycle={handleCompleteCycle}
+          onAccrueFocusTime={handleAccrueFocusTime}
           onOpenMethodCustomizer={() => {
             setCustomizerInitialTab('method');
             setActiveCustomizingPanel('timer');
             setIsCustomizerOpen(true);
           }}
           appearance={config.appearance}
+          onUpdateAppearance={(changes) =>
+            setConfig((prev) => ({
+              ...prev,
+              appearance: {
+                ...(prev.appearance || {}),
+                ...changes,
+              },
+            }))
+          }
           isHighlighted={isCustomizerOpen && (activeCustomizingPanel === 'timer' || customizerInitialTab === 'method')}
         />
 
@@ -667,6 +1038,7 @@ export function App() {
           timerStatus={timerStatus}
           appearance={config.appearance}
           isHighlighted={isCustomizerOpen && (activeCustomizingPanel === 'music' || customizerInitialTab === 'audio')}
+          onOpenSoundGenerator={() => setIsSoundGenOpen(true)}
           onUpdateAppearance={(changes) =>
             setConfig({
               ...config,
@@ -691,9 +1063,10 @@ export function App() {
       {/* 6. Session Task Planner Sidebar */}
       <TaskPlannerSidebar
         tasks={tasks}
-        onChangeTasks={setTasks}
+        onChangeTasks={handleTasksChange}
         isOpen={isTasksOpen}
         onClose={() => setIsTasksOpen(false)}
+        onOpenSoundGenerator={() => setIsSoundGenOpen(true)}
       />
 
       {/* 7. Focus Notepad Panel */}
@@ -702,6 +1075,7 @@ export function App() {
         onChangeContent={setNotepadContent}
         isOpen={isNotesOpen}
         onClose={() => setIsNotesOpen(false)}
+        onOpenSoundGenerator={() => setIsSoundGenOpen(true)}
       />
 
       {/* 8. AI Study Assistant Chat */}
@@ -759,6 +1133,10 @@ export function App() {
           setIsCustomizerOpen(false);
           setIsAiChatOpen(true);
         }}
+        onOpenSoundGenerator={() => {
+          setIsCustomizerOpen(false);
+          setIsSoundGenOpen(true);
+        }}
       />
 
       {/* 10. Modals */}
@@ -777,6 +1155,7 @@ export function App() {
         currentTasks={tasks}
         currentStickyNotes={stickyNotes}
         currentNotepad={notepadContent}
+        roomParticipants={roomState?.participants || []}
         onApplyTemplate={handleApplyTemplate}
         onOpenMarketplace={() => {
           setIsTemplatesOpen(false);
@@ -798,18 +1177,87 @@ export function App() {
       <StatsAnalyticsModal
         isOpen={isStatsOpen}
         onClose={() => setIsStatsOpen(false)}
+        tasks={tasks}
         logs={logs}
         streak={streak}
+        userEmail={user?.email}
+        isCloudSyncActive={!!user}
       />
 
       <RealtimeRoomModal
         isOpen={isRoomsOpen}
         onClose={() => setIsRoomsOpen(false)}
+        roomState={roomState}
         onRoomStateChange={setRoomState}
         currentTimerStatus={timerStatus}
+        currentUser={user}
+        currentConfig={config}
+        onApplyAtmosphere={(newConfig) => {
+          setConfig(newConfig);
+          setRollbackToast({
+            message: '✨ Synchronized room atmosphere & background from Host',
+            timestamp: Date.now(),
+          });
+        }}
+        onSendReaction={handleSendReaction}
       />
 
-      {/* 11. Floating Rollback & Reset Toast Notification */}
+      {/* Floating Live Room Pill */}
+      {roomState && (
+        <LiveRoomFloatingBar
+          roomState={roomState}
+          onOpenRoomModal={() => setIsRoomsOpen(true)}
+          onLeaveRoom={() => setRoomState(null)}
+          onSendReaction={handleSendReaction}
+        />
+      )}
+
+      {/* Live Floating Reaction Bubbles Animation */}
+      {floatingReactions.map((reaction) => (
+        <div
+          key={reaction.id}
+          style={{ left: `${reaction.left}%` }}
+          className="fixed bottom-16 z-50 pointer-events-none text-3xl sm:text-4xl animate-bounce duration-1000 transition transform -translate-x-1/2 drop-shadow-2xl"
+        >
+          <span className="inline-block animate-pulse">{reaction.emoji}</span>
+        </div>
+      ))}
+
+      {/* AI Sound Generator Modal */}
+      <AiSoundGeneratorModal
+        isOpen={isSoundGenOpen}
+        onClose={() => setIsSoundGenOpen(false)}
+        tasks={tasks}
+        notes={notepadContent}
+        focusMethod={config.method.type}
+        audioConfig={config.audio}
+        onChangeAudioConfig={(newAudio) => setConfig((prev) => ({ ...prev, audio: newAudio }))}
+        onShowToast={(msg) => setRollbackToast({ message: msg, timestamp: Date.now() })}
+      />
+
+      {/* 11. Interactive Daily Streak Advancement Toast */}
+      {streakToast && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r from-amber-950/95 via-slate-900/95 to-slate-900/95 border border-amber-500/40 shadow-2xl backdrop-blur-xl rounded-2xl text-slate-100 text-xs animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-auto">
+          <div className="p-1 bg-amber-500/20 rounded-lg text-amber-400">
+            <Flame className="w-4 h-4 fill-amber-400 animate-bounce" />
+          </div>
+          <div>
+            <p className="font-bold text-amber-300">{streakToast.message}</p>
+            <p className="text-[10px] text-slate-400">
+              {user ? `Saved to your cloud database account (${user.email})` : 'Stored locally. Sign in to sync across devices.'}
+            </p>
+          </div>
+          <button
+            onClick={() => setStreakToast(null)}
+            className="p-1 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition ml-2"
+            title="Dismiss"
+          >
+            <CloseIcon className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* 12. Floating Rollback & Reset Toast Notification */}
       {rollbackToast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 bg-slate-900/95 border border-slate-700/80 shadow-2xl backdrop-blur-xl rounded-2xl text-slate-100 text-xs animate-in fade-in slide-in-from-bottom-4 duration-200 pointer-events-auto">
           <div className="flex items-center gap-2">
