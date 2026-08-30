@@ -58,6 +58,22 @@ export const ALL_AVAILABLE_AMBIENT_TRACKS: AmbientTrack[] = [
     active: false,
   },
   {
+    id: 'ambient-stream',
+    name: 'Mountain Stream',
+    icon: 'Waves',
+    type: 'stream',
+    volume: 0.5,
+    active: false,
+  },
+  {
+    id: 'ambient-wind',
+    name: 'Mountain Wind',
+    icon: 'Wind',
+    type: 'wind',
+    volume: 0.45,
+    active: false,
+  },
+  {
     id: 'ambient-whitenoise',
     name: 'Analog White Noise',
     icon: 'Radio',

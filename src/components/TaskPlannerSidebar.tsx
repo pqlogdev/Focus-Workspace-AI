@@ -9,9 +9,8 @@ import {
   GripHorizontal,
   X,
   Sparkles,
-  Zap,
-  Filter,
-  CheckCheck,
+  CornerDownLeft,
+  Flag,
 } from 'lucide-react';
 import { audioSynth } from '../utils/audioSynth';
 
@@ -33,6 +32,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [taskFilter, setTaskFilter] = useState<'all' | 'active' | 'done'>('all');
   const [selectedPriority, setSelectedPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Position state for floating draggable panel
   const [position, setPosition] = useState<{ x: number; y: number } | null>(() => {
@@ -200,13 +200,13 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
 
   if (!isOpen) return null;
 
-  const handleAddTask = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTaskTitle.trim()) return;
+  const handleAddNewTask = () => {
+    const trimmed = newTaskTitle.trim();
+    if (!trimmed) return;
 
     const newTask: Task = {
       id: `task-${Date.now()}`,
-      title: newTaskTitle.trim(),
+      title: trimmed,
       completed: false,
       priority: selectedPriority,
       createdAt: new Date().toISOString(),
@@ -214,6 +214,23 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
 
     onChangeTasks([...tasks, newTask]);
     setNewTaskTitle('');
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAddNewTask();
+    } else if (e.key === 'Escape') {
+      setNewTaskTitle('');
+      inputRef.current?.blur();
+    }
+  };
+
+  const cyclePriority = () => {
+    if (selectedPriority === 'medium') setSelectedPriority('high');
+    else if (selectedPriority === 'high') setSelectedPriority('low');
+    else setSelectedPriority('medium');
   };
 
   const toggleTask = (id: string) => {
@@ -261,6 +278,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
   return (
     <div
       ref={panelRef}
+      id="task-planner-sidebar"
       style={
         position
           ? {
@@ -295,7 +313,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
             localStorage.removeItem('airiser_tasks_position');
           }
         }}
-        className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3 cursor-grab active:cursor-grabbing select-none"
+        className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3 cursor-grab active:cursor-grabbing select-none shrink-0"
         title="Drag task panel anywhere • Double-click to reset"
       >
         <div className="flex items-center gap-2">
@@ -315,6 +333,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
           {onOpenSoundGenerator && (
             <button
               type="button"
+              id="btn-tasks-ai-soundscape"
               onClick={onOpenSoundGenerator}
               className="p-1.5 hover:bg-slate-800 rounded-lg text-indigo-400 hover:text-indigo-200 transition"
               title="Generate Ambient Soundscape for Tasks"
@@ -324,6 +343,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
           )}
           <button
             type="button"
+            id="btn-close-tasks-sidebar"
             onClick={onClose}
             className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
             title="Close Tasks"
@@ -334,7 +354,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
       </div>
 
       {/* Completion Progress Bar */}
-      <div className="mb-3">
+      <div className="mb-3 shrink-0">
         <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
           <span>{completedCount} of {tasks.length} Completed</span>
           <span className="font-mono text-emerald-400">{Math.round(progressPercent)}%</span>
@@ -348,15 +368,16 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
       </div>
 
       {/* Filter Tabs & Quick Actions */}
-      <div className="flex items-center justify-between gap-1 mb-3 text-[11px]">
+      <div className="flex items-center justify-between gap-1 mb-2.5 text-[11px] shrink-0">
         <div className="flex items-center bg-slate-950/60 p-0.5 rounded-xl border border-slate-800/80">
           {(['all', 'active', 'done'] as const).map((f) => (
             <button
               key={f}
               type="button"
+              id={`btn-task-filter-${f}`}
               onClick={() => setTaskFilter(f)}
               className={`px-2 py-0.5 rounded-lg capitalize transition font-medium ${
-                taskFilter === f ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                taskFilter === f ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               {f}
@@ -367,6 +388,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
         {completedCount > 0 && (
           <button
             type="button"
+            id="btn-clear-completed-tasks"
             onClick={clearCompletedTasks}
             className="text-slate-500 hover:text-rose-400 transition text-[10px] flex items-center gap-1"
             title="Remove completed tasks"
@@ -376,41 +398,24 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
         )}
       </div>
 
-      {/* Add Task Input Form */}
-      <form onSubmit={handleAddTask} className="flex gap-2 mb-3">
-        <input
-          type="text"
-          value={newTaskTitle}
-          onChange={(e) => setNewTaskTitle(e.target.value)}
-          placeholder="Add focus task (e.g., Complete Chapter 3)..."
-          className="flex-1 bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/50 transition"
-        />
-        <button
-          type="submit"
-          className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition flex items-center justify-center shadow-lg shadow-indigo-950/50 active:scale-95 shrink-0"
-          title="Add Task"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-      </form>
-
       {/* Task List (Real-time updates) */}
-      <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar min-h-[140px]">
+      <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar min-h-[140px]">
         {filteredTasks.length === 0 ? (
           <div className="text-center text-xs text-slate-500 py-8 px-2">
             {taskFilter === 'done' ? (
               <p>No completed tasks yet. Keep focusing!</p>
             ) : taskFilter === 'active' ? (
-              <p>All tasks completed! Great work.</p>
+              <p>All active tasks completed! Great work.</p>
             ) : (
-              <p>No tasks set for this session. Add a task above to stay on track!</p>
+              <p>No tasks set for this session. Add a task below to stay on track!</p>
             )}
           </div>
         ) : (
           filteredTasks.map((task) => (
             <div
               key={task.id}
-              className={`group flex items-center justify-between p-2.5 rounded-xl border transition ${
+              id={`task-item-${task.id}`}
+              className={`group flex items-center justify-between p-2 rounded-xl border transition ${
                 task.completed
                   ? 'bg-slate-950/40 border-slate-800/40 text-slate-500'
                   : 'bg-slate-800/40 border-slate-800 text-slate-200 hover:bg-slate-800/70 hover:border-slate-700'
@@ -418,6 +423,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
             >
               <button
                 type="button"
+                id={`btn-toggle-task-${task.id}`}
                 onClick={() => toggleTask(task.id)}
                 className="flex items-center gap-2.5 text-xs text-left flex-1 min-w-0"
               >
@@ -436,13 +442,23 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
               </button>
 
               <div className="flex items-center gap-1.5 shrink-0">
-                {task.completed && (
-                  <span className="text-[9px] font-mono text-emerald-400/80 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                    Synced
+                {task.priority && (
+                  <span
+                    className={`text-[9px] font-mono px-1.5 py-0.2 rounded border font-semibold ${
+                      task.priority === 'high'
+                        ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                        : task.priority === 'low'
+                        ? 'bg-slate-800 text-slate-400 border-slate-700'
+                        : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                    }`}
+                  >
+                    {task.priority.toUpperCase()}
                   </span>
                 )}
+
                 <button
                   type="button"
+                  id={`btn-delete-task-${task.id}`}
                   onClick={() => deleteTask(task.id)}
                   className="p-1 text-slate-500 hover:text-rose-400 transition opacity-0 group-hover:opacity-100"
                   title="Delete task"
@@ -455,6 +471,60 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
         )}
       </div>
 
+      {/* Inline Quick Task Input at the Bottom */}
+      <div className="mt-3 pt-2.5 border-t border-slate-800/80 shrink-0">
+        <div className="flex items-center gap-1.5 bg-slate-950/70 border border-slate-800/90 focus-within:border-indigo-500/60 focus-within:ring-1 focus-within:ring-indigo-500/30 rounded-2xl p-1 transition shadow-inner">
+          <input
+            ref={inputRef}
+            id="inline-new-task-input"
+            type="text"
+            value={newTaskTitle}
+            onChange={(e) => setNewTaskTitle(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Add task... (press Enter)"
+            className="flex-1 bg-transparent px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none min-w-0"
+          />
+
+          {/* Quick Priority Cycle Button */}
+          <button
+            type="button"
+            id="btn-cycle-task-priority"
+            onClick={cyclePriority}
+            className={`px-2 py-1 rounded-xl text-[10px] font-mono font-semibold transition border flex items-center gap-1 shrink-0 ${
+              selectedPriority === 'high'
+                ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                : selectedPriority === 'low'
+                ? 'bg-slate-800 text-slate-400 border-slate-700'
+                : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+            }`}
+            title={`Priority: ${selectedPriority} (Click to change)`}
+          >
+            <Flag className="w-2.5 h-2.5" />
+            <span className="capitalize">{selectedPriority}</span>
+          </button>
+
+          {/* Inline Add Action Button */}
+          <button
+            type="button"
+            id="btn-add-inline-task"
+            onClick={handleAddNewTask}
+            disabled={!newTaskTitle.trim()}
+            className={`p-1.5 rounded-xl transition flex items-center justify-center shrink-0 ${
+              newTaskTitle.trim()
+                ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md active:scale-95'
+                : 'text-slate-600 bg-slate-900/50 cursor-not-allowed'
+            }`}
+            title="Add Task (Enter ↵)"
+          >
+            {newTaskTitle.trim() ? (
+              <CornerDownLeft className="w-3.5 h-3.5" />
+            ) : (
+              <Plus className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
+

@@ -71,13 +71,29 @@ export interface AmbientTrack {
   id: string;
   name: string;
   icon: string;
-  type: 'rain' | 'fireplace' | 'cafe' | 'forest' | 'waves' | 'whitenoise' | 'crickets' | 'thunder' | 'custom' | string;
+  type: 'rain' | 'fireplace' | 'cafe' | 'forest' | 'waves' | 'whitenoise' | 'crickets' | 'thunder' | 'stream' | 'wind' | 'custom' | string;
   url?: string;
   volume: number; // 0.0 to 1.0
   active: boolean;
   isCustom?: boolean;
   source?: 'builtin' | 'upload' | 'url' | 'ai';
   addedAt?: string;
+}
+
+export interface AmbientSoundscapeLayer {
+  trackId?: string;
+  type: string;
+  volume: number; // 0.0 to 1.0
+}
+
+export interface SoundscapePreset {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  tag: 'Deep Work' | 'Relax' | 'Focus' | 'Nature' | 'Calm' | 'Sleep';
+  color: string;
+  layers: AmbientSoundscapeLayer[];
 }
 
 export interface CustomAudioRecord {

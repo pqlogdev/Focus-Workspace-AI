@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { FocusLog, Streak, Task } from '../types';
+import { getLocalDateString } from '../utils/streakUtils';
 import {
   BarChart,
   Bar,
@@ -60,12 +61,12 @@ export const StatsAnalyticsModal: React.FC<StatsAnalyticsModalProps> = ({
 
   // 1. Calculate Last 7 Rolling Days for Precise Charting
   const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = getLocalDateString(today);
 
   const past7Days = Array.from({ length: 7 }).map((_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (6 - i));
-    const isoDate = d.toISOString().split('T')[0];
+    const isoDate = getLocalDateString(d);
     const dayLabel = d.toLocaleDateString('en-US', { weekday: 'short' });
     const fullDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const isToday = isoDate === todayStr;

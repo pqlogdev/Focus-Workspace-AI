@@ -11,11 +11,17 @@ import {
   WidgetBorder,
   WidgetRadius,
   AccentColor,
+  SoundscapePreset,
 } from '../types';
 import { audioSynth } from '../utils/audioSynth';
 import { getFirstColor, isGradient } from '../utils/colorUtils';
 import { PRESET_MUSIC_TRACKS, PRESET_BREAK_MUSIC_TRACKS, PRESET_AMBIENT_TRACKS } from '../data/presetAudio';
 import { ALL_AVAILABLE_AMBIENT_TRACKS } from '../data/availableAmbient';
+import {
+  AMBIENT_SOUNDSCAPE_PRESETS,
+  applySoundscapePreset,
+  detectActiveSoundscapePreset,
+} from '../data/ambientSoundscapePresets';
 import { AudioUploadModal } from './AudioUploadModal';
 import {
   Play,
@@ -48,11 +54,14 @@ import {
   Disc,
   Activity,
   Check,
+  CheckCircle2,
   Wind,
   Bell,
   FileAudio,
   Minimize2,
-  Maximize2
+  Maximize2,
+  Droplets,
+  Headphones,
 } from 'lucide-react';
 
 interface AudioPlayerProps {
@@ -109,9 +118,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     return 0;
   });
   const [activeDrawerTab, setActiveDrawerTab] = useState<'music' | 'ambient' | null>(null);
+  const [soundscapeTagFilter, setSoundscapeTagFilter] = useState<string>('All');
+  const [audioToast, setAudioToast] = useState<{ message: string; icon?: string } | null>(null);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadModalCategory, setUploadModalCategory] = useState<'music' | 'ambient'>('music');
+
+  useEffect(() => {
+    if (audioToast) {
+      const timer = setTimeout(() => setAudioToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [audioToast]);
 
   // Drag and drop state for track reordering
   const [draggedMusicIndex, setDraggedMusicIndex] = useState<number | null>(null);
@@ -464,6 +482,42 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   };
 
   const activeAmbientCount = ambientTracks.filter((t) => t.active).length;
+  const activeSoundscape = detectActiveSoundscapePreset(AMBIENT_SOUNDSCAPE_PRESETS, ambientTracks);
+
+  const toggleSoundscapePreset = (preset: SoundscapePreset) => {
+    if (activeSoundscape?.id === preset.id) {
+      // Toggle off all layers in this soundscape
+      const allMuted = ambientTracks.map((t) => ({ ...t, active: false }));
+      updateAudio({
+        ...audioCfg,
+        ambientTracks: allMuted,
+        ambientPlaylist: { tracks: allMuted, shuffleEnabled: false },
+      });
+      setAudioToast({ message: `Muted ${preset.name} soundscape` });
+    } else {
+      // Apply and activate soundscape preset layers
+      const updated = applySoundscapePreset(preset, ambientTracks);
+      updateAudio({
+        ...audioCfg,
+        ambientTracks: updated,
+        ambientPlaylist: { tracks: updated, shuffleEnabled: false },
+      });
+      setAudioToast({
+        message: `Activated ${preset.name} soundscape (${preset.tag})`,
+        icon: preset.icon,
+      });
+    }
+  };
+
+  const muteAllAmbientTracks = () => {
+    const allMuted = ambientTracks.map((t) => ({ ...t, active: false }));
+    updateAudio({
+      ...audioCfg,
+      ambientTracks: allMuted,
+      ambientPlaylist: { tracks: allMuted, shuffleEnabled: false },
+    });
+    setAudioToast({ message: 'Muted all ambient soundscape layers' });
+  };
 
   const renderAmbientIcon = (type: string, iconName?: string, className = 'w-4 h-4') => {
     const key = iconName || type;
@@ -478,16 +532,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       case 'Trees': return <Trees className={className} />;
       case 'waves':
       case 'Waves': return <Waves className={className} />;
+      case 'stream':
+      case 'Droplets': return <Droplets className={className} />;
       case 'whitenoise':
       case 'Radio': return <Radio className={className} />;
       case 'crickets':
       case 'Moon': return <Moon className={className} />;
       case 'thunder':
       case 'Zap': return <Zap className={className} />;
+      case 'wind':
       case 'Wind': return <Wind className={className} />;
       case 'Bell': return <Bell className={className} />;
       case 'Disc': return <Disc className={className} />;
       case 'Sparkles': return <Sparkles className={className} />;
+      case 'Headphones': return <Headphones className={className} />;
       default: return <Volume2 className={className} />;
     }
   };
@@ -820,9 +878,57 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           </div>
 
           {/* Direct Live Ambient Mixer Channels */}
-          <div className="space-y-1.5 pt-1">
-            <div className="flex items-center justify-between text-[11px] text-slate-400">
-              <span>Ambient Sound Layers</span>
+          <div className="space-y-2 pt-1">
+            {/* Ambient Presets Quick Carousel */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span className="flex items-center gap-1 font-semibold text-slate-300">
+                  <Sparkles className="w-3 h-3 text-amber-400" />
+                  <span>Ambient Soundscapes</span>
+                </span>
+                {activeSoundscape ? (
+                  <span className="text-[10px] text-amber-300 font-semibold truncate max-w-[130px] flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                    {activeSoundscape.name}
+                  </span>
+                ) : activeAmbientCount > 0 ? (
+                  <button
+                    onClick={muteAllAmbientTracks}
+                    className="text-[10px] text-slate-400 hover:text-rose-300 transition flex items-center gap-0.5"
+                  >
+                    <VolumeX className="w-2.5 h-2.5" />
+                    <span>Mute All</span>
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-slate-500">Muted</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                {AMBIENT_SOUNDSCAPE_PRESETS.map((preset) => {
+                  const isThisActive = activeSoundscape?.id === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      onClick={() => toggleSoundscapePreset(preset)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-semibold flex items-center gap-1 shrink-0 transition border ${
+                        isThisActive
+                          ? 'bg-amber-500/25 border-amber-500/60 text-amber-200 shadow-sm'
+                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                      }`}
+                      title={`${preset.name}: ${preset.description}`}
+                    >
+                      {renderAmbientIcon(preset.layers[0]?.type || 'rain', preset.icon, 'w-3 h-3')}
+                      <span>{preset.name}</span>
+                      {isThisActive && <Check className="w-2.5 h-2.5 text-amber-400 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+              <span>Individual Layers</span>
               <button
                 onClick={() => setActiveDrawerTab(activeDrawerTab === 'ambient' ? null : 'ambient')}
                 className="text-[10px] text-indigo-400 hover:underline"
@@ -993,7 +1099,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 ? 'bg-amber-500 text-amber-950 font-bold shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/80'
             }`}
-            title="Open Ambient Sound Queue"
+            title="Open Ambient Soundscapes & Layers"
           >
             <Layers className={`w-3.5 h-3.5 ${activeAmbientCount > 0 ? 'text-amber-400' : ''}`} />
             <span className="font-semibold text-[11px] hidden sm:inline">Ambient</span>
@@ -1003,6 +1109,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
               {activeAmbientCount}
             </span>
           </button>
+
+          {/* Active Soundscape Direct Chip */}
+          {activeSoundscape && (
+            <button
+              onClick={() => setActiveDrawerTab('ambient')}
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-semibold transition shrink-0 shadow-sm"
+              title={`Active Preset: ${activeSoundscape.name} (${activeSoundscape.tag}). Click to open soundscapes library.`}
+            >
+              <Sparkles className="w-3 h-3 text-amber-400 animate-pulse shrink-0" />
+              <span className="truncate max-w-[110px]">{activeSoundscape.name}</span>
+            </button>
+          )}
 
           {/* AI Sound Generator Action Button */}
           {onOpenSoundGenerator && (
@@ -1156,12 +1274,24 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         </div>
       )}
 
+      {/* Interactive Audio Toast */}
+      {audioToast && (
+        <div
+          className={`absolute ${
+            position && position.y < 120 ? 'top-full mt-2' : '-top-9'
+          } left-1/2 -translate-x-1/2 px-3 py-1 bg-slate-900/95 backdrop-blur-md border border-amber-500/50 text-amber-200 text-xs font-semibold rounded-full shadow-2xl flex items-center gap-1.5 z-50 pointer-events-none animate-in fade-in slide-in-from-bottom-2 duration-150 whitespace-nowrap`}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-pulse shrink-0" />
+          <span>{audioToast.message}</span>
+        </div>
+      )}
+
       {/* Flyout Drawer for Music Queue / Ambient Queue */}
       {activeDrawerTab && (
         <div
           className={`absolute ${
             position && position.y < 320 ? 'top-full mt-2.5' : 'bottom-full mb-2.5'
-          } left-1/2 -translate-x-1/2 w-84 sm:w-96 max-w-[94vw] bg-slate-900/95 backdrop-blur-2xl border border-slate-800 rounded-3xl p-4 shadow-2xl z-50 text-slate-200 space-y-3.5 animate-in fade-in zoom-in-95 duration-150`}
+          } left-1/2 -translate-x-1/2 w-84 sm:w-[450px] max-w-[95vw] bg-slate-900/95 backdrop-blur-2xl border border-slate-800 rounded-3xl p-4 shadow-2xl z-50 text-slate-200 space-y-3.5 animate-in fade-in zoom-in-95 duration-150`}
         >
           {/* Header Tabs & Actions */}
           <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
@@ -1180,7 +1310,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                   activeDrawerTab === 'ambient' ? 'bg-amber-500 text-amber-950 font-bold' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Layers className="w-3.5 h-3.5" /> Ambient ({ambientTracks.length})
+                <Layers className="w-3.5 h-3.5" /> Soundscapes ({AMBIENT_SOUNDSCAPE_PRESETS.length})
               </button>
             </div>
 
@@ -1334,150 +1464,299 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             </div>
           )}
 
-          {/* TAB 2: AMBIENT SOUNDS QUEUE WITH DRAG & DROP REORDERING */}
+          {/* TAB 2: SOUNDSCAPE PRESETS & AMBIENT LAYERS MIXER */}
           {activeDrawerTab === 'ambient' && (
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-                <span className="flex items-center gap-1.5">
-                  <span>Soundscape Layers</span>
-                  <span className="text-[10px] text-slate-500">• Drag ⠿ to reorder</span>
-                </span>
-                <span className="text-amber-400 font-semibold">{activeAmbientCount} Active</span>
-              </div>
+            <div className="space-y-3">
+              {/* Soundscape Presets Section Header & Status */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs px-1">
+                  <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Soundscape Presets</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {activeSoundscape ? (
+                      <span className="text-[11px] text-amber-300 font-semibold bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                        Active: {activeSoundscape.name}
+                      </span>
+                    ) : activeAmbientCount > 0 ? (
+                      <span className="text-[11px] text-slate-400 font-medium bg-slate-800 px-2 py-0.5 rounded-full">
+                        {activeAmbientCount} Custom Layer{activeAmbientCount > 1 ? 's' : ''}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-slate-500 font-medium">All Muted</span>
+                    )}
 
-              {onOpenSoundGenerator && (
-                <button
-                  onClick={() => {
-                    setActiveDrawerTab(null);
-                    onOpenSoundGenerator();
-                  }}
-                  className="w-full py-1.5 px-3 bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/40 hover:to-purple-600/40 border border-indigo-500/40 rounded-xl text-xs font-semibold text-indigo-200 hover:text-white flex items-center justify-center gap-1.5 transition shadow-sm"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-                  <span>AI Sound Generator (Ground with Tasks)</span>
-                </button>
-              )}
+                    {activeAmbientCount > 0 && (
+                      <button
+                        onClick={muteAllAmbientTracks}
+                        className="text-[10px] text-slate-400 hover:text-rose-300 bg-slate-800 hover:bg-rose-950/40 border border-slate-700 hover:border-rose-800/60 px-2 py-0.5 rounded-lg transition flex items-center gap-1 font-medium"
+                        title="Mute all ambient sounds"
+                      >
+                        <VolumeX className="w-3 h-3" />
+                        <span>Mute All</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
 
-              <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                {ambientTracks.map((track, idx) => {
-                  const isDraggingThis = draggedAmbientIndex === idx;
-                  const isOverThis = dragOverAmbientIndex === idx;
-
-                  return (
-                    <div
-                      key={track.id || `ambient-${idx}`}
-                      draggable
-                      onDragStart={(e) => {
-                        setDraggedAmbientIndex(idx);
-                        e.dataTransfer.effectAllowed = 'move';
-                        e.dataTransfer.setData('text/plain', idx.toString());
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = 'move';
-                        if (dragOverAmbientIndex !== idx) {
-                          setDragOverAmbientIndex(idx);
-                        }
-                      }}
-                      onDragLeave={() => {
-                        if (dragOverAmbientIndex === idx) {
-                          setDragOverAmbientIndex(null);
-                        }
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (draggedAmbientIndex !== null && draggedAmbientIndex !== idx) {
-                          moveAmbientTrack(draggedAmbientIndex, idx);
-                        }
-                        setDraggedAmbientIndex(null);
-                        setDragOverAmbientIndex(null);
-                      }}
-                      onDragEnd={() => {
-                        setDraggedAmbientIndex(null);
-                        setDragOverAmbientIndex(null);
-                      }}
-                      className={`p-2.5 rounded-2xl border transition group ${
-                        isDraggingThis
-                          ? 'opacity-40 border-dashed border-amber-400 bg-amber-950/20'
-                          : isOverThis
-                          ? 'border-amber-400 bg-amber-500/20 scale-[1.01]'
-                          : track.active
-                          ? 'bg-amber-950/20 border-amber-500/40 text-amber-100'
-                          : 'bg-slate-950/40 border-slate-800/70 text-slate-300'
+                {/* Soundscape Mood Filters */}
+                <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar text-[11px]">
+                  {['All', 'Focus', 'Nature', 'Deep Work', 'Relax', 'Sleep'].map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setSoundscapeTagFilter(tag)}
+                      className={`px-2.5 py-0.5 rounded-full font-medium transition shrink-0 ${
+                        soundscapeTagFilter === tag
+                          ? 'bg-amber-500 text-amber-950 font-bold shadow-sm'
+                          : 'bg-slate-950/60 text-slate-400 hover:text-slate-200 border border-slate-800/80 hover:border-slate-700'
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span
-                            className="cursor-grab active:cursor-grabbing p-0.5 text-slate-500 hover:text-amber-300 transition"
-                            title="Drag to reorder sound layer"
-                          >
-                            <GripVertical className="w-3.5 h-3.5" />
-                          </span>
+                      {tag}
+                    </button>
+                  ))}
+                </div>
 
-                          <span className={track.active ? 'text-amber-400' : 'text-slate-400'}>
-                            {renderAmbientIcon(track.type, track.icon)}
-                          </span>
-                          <span className="text-xs font-semibold truncate">{track.name}</span>
+                {/* Soundscape Presets Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto pr-1 custom-scrollbar">
+                  {AMBIENT_SOUNDSCAPE_PRESETS.filter(
+                    (p) => soundscapeTagFilter === 'All' || p.tag === soundscapeTagFilter
+                  ).map((preset) => {
+                    const isPresetActive = activeSoundscape?.id === preset.id;
+                    return (
+                      <div
+                        key={preset.id}
+                        onClick={() => toggleSoundscapePreset(preset)}
+                        className={`p-2.5 rounded-2xl border transition text-left cursor-pointer flex flex-col justify-between group ${
+                          isPresetActive
+                            ? 'bg-gradient-to-br from-amber-950/40 to-slate-900 border-amber-500/70 text-amber-100 ring-1 ring-amber-500/30 shadow-lg'
+                            : 'bg-slate-950/40 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/50 text-slate-300'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className={`p-1 rounded-lg ${
+                                  isPresetActive ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-800/80 text-slate-400 group-hover:text-amber-300'
+                                } transition`}
+                              >
+                                {renderAmbientIcon(preset.layers[0]?.type || 'rain', preset.icon, 'w-3.5 h-3.5')}
+                              </span>
+                              <span className="font-bold text-xs truncate">{preset.name}</span>
+                            </div>
+
+                            <span
+                              className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold shrink-0 uppercase tracking-wider ${
+                                isPresetActive
+                                  ? 'bg-amber-400 text-amber-950 font-bold'
+                                  : 'bg-slate-800/80 text-slate-400'
+                              }`}
+                            >
+                              {preset.tag}
+                            </span>
+                          </div>
+
+                          <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed mb-2">
+                            {preset.description}
+                          </p>
                         </div>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {track.isCustom && (
-                            <button
-                              type="button"
-                              onClick={(e) => handleRemoveAmbientTrack(track.id, e)}
-                              className="p-1 text-slate-500 hover:text-rose-400 transition"
-                              title="Delete custom ambient track"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                        <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/50 text-[10px]">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {preset.layers.map((layer, idx) => (
+                              <span
+                                key={idx}
+                                className={`px-1.5 py-0.5 rounded-md font-mono ${
+                                  isPresetActive
+                                    ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30'
+                                    : 'bg-slate-900 text-slate-400 border border-slate-800'
+                                }`}
+                              >
+                                {layer.type} {Math.round(layer.volume * 100)}%
+                              </span>
+                            ))}
+                          </div>
 
                           <button
-                            onClick={() => toggleAmbientTrack(track.id)}
-                            className={`w-8 h-4 rounded-full transition flex items-center px-0.5 ${
-                              track.active ? 'bg-amber-500 justify-end' : 'bg-slate-800 justify-start'
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSoundscapePreset(preset);
+                            }}
+                            className={`px-2 py-0.5 rounded-md font-semibold text-[10px] transition flex items-center gap-1 ${
+                              isPresetActive
+                                ? 'bg-amber-500 text-amber-950 shadow'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
                             }`}
                           >
-                            <span className="w-3 h-3 rounded-full bg-slate-950 shadow-sm" />
+                            {isPresetActive ? (
+                              <>
+                                <Check className="w-2.5 h-2.5" />
+                                <span>Active</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-2.5 h-2.5" />
+                                <span>Play</span>
+                              </>
+                            )}
                           </button>
                         </div>
                       </div>
-
-                      {track.active && (
-                        <div className="flex items-center gap-2 pt-1 border-t border-slate-800/40">
-                          <Volume2 className="w-3 h-3 text-slate-400" />
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={track.volume}
-                            onChange={(e) => updateAmbientTrackVolume(track.id, parseFloat(e.target.value))}
-                            className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                          />
-                          <span className="text-[10px] font-mono text-slate-400 w-6 text-right">
-                            {Math.round(track.volume * 100)}%
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Add Custom Ambient CTA */}
-              <button
-                type="button"
-                onClick={() => {
-                  setUploadModalCategory('ambient');
-                  setIsUploadModalOpen(true);
-                }}
-                className="w-full py-2 border border-dashed border-slate-800 hover:border-amber-500/50 bg-slate-950/40 hover:bg-amber-950/20 text-amber-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>Upload Custom Ambient Sound</span>
-              </button>
+              {/* Individual Soundscape Layers & Manual Volume Mixer */}
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+                  <span className="flex items-center gap-1.5 font-medium text-slate-300">
+                    <Sliders className="w-3 h-3 text-amber-400" />
+                    <span>Layer Volume Controls</span>
+                    <span className="text-[10px] text-slate-500">• Drag ⠿ to reorder</span>
+                  </span>
+                  <span className="text-amber-400 font-semibold">{activeAmbientCount} Active</span>
+                </div>
+
+                <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                  {ambientTracks.map((track, idx) => {
+                    const isDraggingThis = draggedAmbientIndex === idx;
+                    const isOverThis = dragOverAmbientIndex === idx;
+
+                    return (
+                      <div
+                        key={track.id || `ambient-${idx}`}
+                        draggable
+                        onDragStart={(e) => {
+                          setDraggedAmbientIndex(idx);
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', idx.toString());
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                          if (dragOverAmbientIndex !== idx) {
+                            setDragOverAmbientIndex(idx);
+                          }
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverAmbientIndex === idx) {
+                            setDragOverAmbientIndex(null);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (draggedAmbientIndex !== null && draggedAmbientIndex !== idx) {
+                            moveAmbientTrack(draggedAmbientIndex, idx);
+                          }
+                          setDraggedAmbientIndex(null);
+                          setDragOverAmbientIndex(null);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedAmbientIndex(null);
+                          setDragOverAmbientIndex(null);
+                        }}
+                        className={`p-2 rounded-xl border transition group ${
+                          isDraggingThis
+                            ? 'opacity-40 border-dashed border-amber-400 bg-amber-950/20'
+                            : isOverThis
+                            ? 'border-amber-400 bg-amber-500/20 scale-[1.01]'
+                            : track.active
+                            ? 'bg-amber-950/20 border-amber-500/40 text-amber-100'
+                            : 'bg-slate-950/40 border-slate-800/70 text-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className="cursor-grab active:cursor-grabbing p-0.5 text-slate-500 hover:text-amber-300 transition"
+                              title="Drag to reorder sound layer"
+                            >
+                              <GripVertical className="w-3.5 h-3.5" />
+                            </span>
+
+                            <span className={track.active ? 'text-amber-400' : 'text-slate-400'}>
+                              {renderAmbientIcon(track.type, track.icon)}
+                            </span>
+                            <span className="text-xs font-semibold truncate">{track.name}</span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {track.isCustom && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleRemoveAmbientTrack(track.id, e)}
+                                className="p-1 text-slate-500 hover:text-rose-400 transition"
+                                title="Delete custom ambient track"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => toggleAmbientTrack(track.id)}
+                              className={`w-8 h-4 rounded-full transition flex items-center px-0.5 ${
+                                track.active ? 'bg-amber-500 justify-end' : 'bg-slate-800 justify-start'
+                              }`}
+                            >
+                              <span className="w-3 h-3 rounded-full bg-slate-950 shadow-sm" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {track.active && (
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-800/40">
+                            <Volume2 className="w-3 h-3 text-slate-400" />
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={track.volume}
+                              onChange={(e) => updateAmbientTrackVolume(track.id, parseFloat(e.target.value))}
+                              className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                            />
+                            <span className="text-[10px] font-mono text-slate-400 w-6 text-right">
+                              {Math.round(track.volume * 100)}%
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* AI Generator and Custom Ambient Upload CTA */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                {onOpenSoundGenerator && (
+                  <button
+                    onClick={() => {
+                      setActiveDrawerTab(null);
+                      onOpenSoundGenerator();
+                    }}
+                    className="py-1.5 px-2 bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 border border-indigo-500/40 rounded-xl text-xs font-semibold text-indigo-200 hover:text-white flex items-center justify-center gap-1.5 transition shadow-sm"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                    <span>AI Sound Generator</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadModalCategory('ambient');
+                    setIsUploadModalOpen(true);
+                  }}
+                  className="py-1.5 px-2 border border-dashed border-slate-800 hover:border-amber-500/50 bg-slate-950/40 hover:bg-amber-950/20 text-amber-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload Sound</span>
+                </button>
+              </div>
             </div>
           )}
         </div>

@@ -24,6 +24,7 @@ import {
   CustomImageRecord,
   RollbackSnapshot,
   Template,
+  FocusMethodType,
 } from './types';
 import {
   DEFAULT_WORKSPACE_CONFIG,
@@ -33,6 +34,7 @@ import {
 } from './data/defaultWorkspace';
 import { PRESET_BACKGROUNDS, PRESET_BREAK_BACKGROUNDS } from './data/presetBackgrounds';
 import { safeLocalStorageSet, safeLocalStorageGet, safeLocalStorageJSONGet } from './utils/storage';
+import { evaluateStreak, getLocalDateString } from './utils/streakUtils';
 import { BackgroundLayer } from './components/BackgroundLayer';
 import { AudioPlayer } from './components/AudioPlayer';
 import { TimerWidget } from './components/TimerWidget';
@@ -40,6 +42,7 @@ import { StickyNotesCanvas } from './components/StickyNotesCanvas';
 import { NotepadPanel } from './components/NotepadPanel';
 import { TaskPlannerSidebar } from './components/TaskPlannerSidebar';
 import { BreakReflectionModal } from './components/BreakReflectionModal';
+import { FocusSessionSummaryModal, CompletedSessionStats } from './components/FocusSessionSummaryModal';
 import { TemplateModal } from './components/TemplateModal';
 import { MarketplaceModal } from './components/MarketplaceModal';
 import { StatsAnalyticsModal } from './components/StatsAnalyticsModal';
@@ -111,106 +114,18 @@ export function App() {
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
   const [isSoundGenOpen, setIsSoundGenOpen] = useState(false);
   const [isBreakModalOpen, setIsBreakModalOpen] = useState(false);
+  const [isSessionSummaryOpen, setIsSessionSummaryOpen] = useState(false);
+  const [lastCompletedSession, setLastCompletedSession] = useState<CompletedSessionStats | null>(null);
 
   const [streakToast, setStreakToast] = useState<{ message: string; days: number; isMilestone?: boolean } | null>(null);
 
-  // Helper: Calculate daily streak progression on focus/task activity and persist to database
+  // Helper: Calculate daily streak progression on focus/task/visit activity and persist to database
   const calculateStreakOnActivity = useCallback((prevStreak: Streak): Streak => {
-    const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
-    const lastDateStr = prevStreak.lastFocusDate ? prevStreak.lastFocusDate.split('T')[0] : '';
-
-    const history = Array.isArray(prevStreak.streakHistory) ? [...prevStreak.streakHistory] : [];
-    if (!history.includes(todayStr)) {
-      history.push(todayStr);
+    const { streak: updated, toast } = evaluateStreak(prevStreak, { isUserAction: true });
+    if (toast) {
+      setStreakToast(toast);
     }
-    const trimmedHistory = history.slice(-60);
-    const totalFocusDays = Math.max(
-      trimmedHistory.length,
-      (prevStreak.totalFocusDays || 0) + (lastDateStr !== todayStr ? 1 : 0)
-    );
-
-    if (!lastDateStr) {
-      // First ever activity recorded
-      const initialStreak: Streak = {
-        currentStreak: 1,
-        longestStreak: Math.max(1, prevStreak.longestStreak || 1),
-        lastFocusDate: now.toISOString(),
-        milestones: prevStreak.milestones || [3, 7, 14, 30, 60, 100],
-        totalFocusDays: 1,
-        streakHistory: trimmedHistory,
-        freezeDaysAvailable: prevStreak.freezeDaysAvailable ?? 1,
-        unlockedMilestones: [1],
-        updatedAt: now.toISOString(),
-      };
-      setStreakToast({ message: '🔥 Focus streak started! Day 1 complete.', days: 1 });
-      return initialStreak;
-    }
-
-    if (lastDateStr === todayStr) {
-      // Activity recorded again today - maintain streak count and update timestamp & history
-      return {
-        ...prevStreak,
-        lastFocusDate: now.toISOString(),
-        totalFocusDays,
-        streakHistory: trimmedHistory,
-        updatedAt: now.toISOString(),
-      };
-    }
-
-    // Calculate calendar day difference
-    const todayDateObj = new Date(todayStr);
-    const lastDateObj = new Date(lastDateStr);
-    const diffDays = Math.round((todayDateObj.getTime() - lastDateObj.getTime()) / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 1) {
-      // Consecutive day: extend streak!
-      const newCurrent = (prevStreak.currentStreak || 0) + 1;
-      const newLongest = Math.max(prevStreak.longestStreak || 0, newCurrent);
-      const allMilestones = prevStreak.milestones || [3, 7, 14, 30, 60, 100];
-      const newlyUnlocked = allMilestones.filter(
-        (m) => newCurrent >= m && !(prevStreak.unlockedMilestones || []).includes(m)
-      );
-      const unlockedMilestones = Array.from(
-        new Set([...(prevStreak.unlockedMilestones || []), ...newlyUnlocked, ...(newCurrent === 1 ? [1] : [])])
-      );
-
-      const isMilestone = newlyUnlocked.length > 0;
-      setStreakToast({
-        message: isMilestone
-          ? `🎉 Milestone Unlocked! 🔥 ${newCurrent}-Day Focus Streak!`
-          : `🔥 Streak Advanced! Day ${newCurrent} achieved!`,
-        days: newCurrent,
-        isMilestone,
-      });
-
-      return {
-        ...prevStreak,
-        currentStreak: newCurrent,
-        longestStreak: newLongest,
-        lastFocusDate: now.toISOString(),
-        totalFocusDays,
-        streakHistory: trimmedHistory,
-        unlockedMilestones,
-        updatedAt: now.toISOString(),
-      };
-    } else {
-      // 2+ days gap: reset streak to 1
-      setStreakToast({
-        message: `🔥 New Streak Started! Day 1 recorded.`,
-        days: 1,
-      });
-
-      return {
-        ...prevStreak,
-        currentStreak: 1,
-        longestStreak: Math.max(prevStreak.longestStreak || 1, 1),
-        lastFocusDate: now.toISOString(),
-        totalFocusDays,
-        streakHistory: trimmedHistory,
-        updatedAt: now.toISOString(),
-      };
-    }
+    return updated;
   }, []);
 
   // 4. Tasks, Notes, Logs & Streaks
@@ -226,17 +141,11 @@ export function App() {
   const [logs, setLogs] = useState<FocusLog[]>(() =>
     safeLocalStorageJSONGet<FocusLog[]>('airiser_logs', [])
   );
-  const [streak, setStreak] = useState<Streak>(() =>
-    safeLocalStorageJSONGet<Streak>('airiser_streak', {
-      currentStreak: 1,
-      longestStreak: 1,
-      lastFocusDate: new Date().toISOString(),
-      milestones: [3, 7, 14, 30, 60, 100],
-      totalFocusDays: 1,
-      streakHistory: [new Date().toISOString().split('T')[0]],
-      freezeDaysAvailable: 1,
-    })
-  );
+  const [streak, setStreak] = useState<Streak>(() => {
+    const saved = safeLocalStorageJSONGet<Streak | null>('airiser_streak', null);
+    const { streak: initial } = evaluateStreak(saved);
+    return initial;
+  });
 
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; emoji: string; left: number }[]>([]);
@@ -318,7 +227,11 @@ export function App() {
             if (cloudData.stickyNotes) setStickyNotes(cloudData.stickyNotes);
             if (cloudData.notepad !== undefined) setNotepadContent(cloudData.notepad);
             if (cloudData.logs) setLogs(cloudData.logs);
-            if (cloudData.streak) setStreak(cloudData.streak);
+            if (cloudData.streak) {
+              const { streak: evaluatedStreak, toast } = evaluateStreak(cloudData.streak);
+              setStreak(evaluatedStreak);
+              if (toast) setStreakToast(toast);
+            }
             if (cloudData.customImages) setCustomImages(cloudData.customImages);
             if (cloudData.rollbackSnapshot) {
               setRollbackSnapshot(cloudData.rollbackSnapshot);
@@ -360,6 +273,17 @@ export function App() {
     });
 
     return () => unsubscribe();
+  }, []);
+
+  // Daily Streak Active Evaluation on Mount/Launch
+  useEffect(() => {
+    setStreak((prev) => {
+      const { streak: evaluatedStreak, toast } = evaluateStreak(prev);
+      if (toast) {
+        setStreakToast(toast);
+      }
+      return evaluatedStreak;
+    });
   }, []);
 
   // Debounced auto-save to Cloud when state changes and user is signed in
@@ -658,7 +582,7 @@ export function App() {
     );
 
     const nowIso = new Date().toISOString();
-    const todayStr = nowIso.split('T')[0];
+    const todayStr = getLocalDateString();
 
     let processedTasks = newTasks;
 
@@ -674,7 +598,7 @@ export function App() {
       // 2. Instantly update or create today's FocusLog
       setLogs((prevLogs) => {
         const todayLogIndex = prevLogs.findIndex(
-          (l) => l.date && l.date.startsWith(todayStr)
+          (l) => l.date && (l.date.startsWith(todayStr) || getLocalDateString(new Date(l.date)) === todayStr)
         );
 
         if (todayLogIndex >= 0) {
@@ -709,7 +633,7 @@ export function App() {
 
         setLogs((prevLogs) => {
           const todayLogIndex = prevLogs.findIndex(
-            (l) => l.date && l.date.startsWith(todayStr)
+            (l) => l.date && (l.date.startsWith(todayStr) || getLocalDateString(new Date(l.date)) === todayStr)
           );
           if (todayLogIndex >= 0) {
             const updated = [...prevLogs];
@@ -734,11 +658,11 @@ export function App() {
   const handleAccrueFocusTime = useCallback((seconds: number) => {
     if (seconds <= 0) return;
     const nowIso = new Date().toISOString();
-    const todayStr = nowIso.split('T')[0];
+    const todayStr = getLocalDateString();
 
     setLogs((prevLogs) => {
       const todayLogIndex = prevLogs.findIndex(
-        (l) => l.date && l.date.startsWith(todayStr)
+        (l) => l.date && (l.date.startsWith(todayStr) || getLocalDateString(new Date(l.date)) === todayStr)
       );
 
       let updatedLogs: FocusLog[];
@@ -766,48 +690,89 @@ export function App() {
     setStreak((prev) => calculateStreakOnActivity(prev));
   }, [config.method.type, tasks, calculateStreakOnActivity]);
 
-  // Handle cycle completion
-  const handleCompleteCycle = useCallback(() => {
-    const nowIso = new Date().toISOString();
-    const todayStr = nowIso.split('T')[0];
+  // Handle cycle completion with rich post-session stats
+  const handleCompleteCycle = useCallback(
+    (sessionData?: {
+      focusDurationSeconds?: number;
+      cycleNumber?: number;
+      isLongBreakNext?: boolean;
+    }) => {
+      const nowIso = new Date().toISOString();
+      const todayStr = getLocalDateString();
+      const isLong = sessionData?.isLongBreakNext ?? false;
+      const cycleNum = sessionData?.cycleNumber ?? 1;
+      const durationSecs = sessionData?.focusDurationSeconds ?? config.method.workDuration;
+      const breakMins = isLong
+        ? Math.round(config.method.longBreakDuration / 60)
+        : Math.round(config.method.breakDuration / 60);
 
-    setLogs((prevLogs) => {
-      const todayLogIndex = prevLogs.findIndex(
-        (l) => l.date && l.date.startsWith(todayStr)
-      );
+      const getMethodDisplayName = (type: FocusMethodType) => {
+        switch (type) {
+          case 'pomodoro':
+            return 'Pomodoro Technique';
+          case '52-17':
+            return '52/17 Rule';
+          case 'deepwork':
+            return 'Deep Work Block';
+          case 'flowtime':
+            return 'Flowtime Stopwatch';
+          case 'custom':
+          default:
+            return 'Custom Focus Method';
+        }
+      };
 
-      if (todayLogIndex >= 0) {
-        const updated = [...prevLogs];
-        updated[todayLogIndex] = {
-          ...updated[todayLogIndex],
-          methodUsed: config.method.type,
-          tasksCompleted: Math.max(
-            updated[todayLogIndex].tasksCompleted || 0,
-            tasks.filter((t) => t.completed).length
-          ),
-        };
-        safeLocalStorageSet('airiser_logs', JSON.stringify(updated));
-        return updated;
-      } else {
-        const newLog: FocusLog = {
-          id: `log-${Date.now()}`,
-          date: nowIso,
-          totalFocusTime: 0,
-          methodUsed: config.method.type,
-          tasksCompleted: tasks.filter((t) => t.completed).length,
-        };
-        const updated = [newLog, ...prevLogs];
-        safeLocalStorageSet('airiser_logs', JSON.stringify(updated));
-        return updated;
-      }
-    });
+      const completedSessionInfo: CompletedSessionStats = {
+        focusDurationSeconds: durationSecs,
+        cycleNumber: cycleNum,
+        isLongBreakNext: isLong,
+        methodType: config.method.type,
+        methodName: getMethodDisplayName(config.method.type),
+        breakDurationMinutes: breakMins > 0 ? breakMins : (isLong ? 15 : 5),
+        completedAt: nowIso,
+      };
 
-    // Update streak for today
-    setStreak((prev) => calculateStreakOnActivity(prev));
+      setLastCompletedSession(completedSessionInfo);
 
-    // Open break reflection modal
-    setIsBreakModalOpen(true);
-  }, [config.method.type, tasks, calculateStreakOnActivity]);
+      setLogs((prevLogs) => {
+        const todayLogIndex = prevLogs.findIndex(
+          (l) => l.date && (l.date.startsWith(todayStr) || getLocalDateString(new Date(l.date)) === todayStr)
+        );
+
+        if (todayLogIndex >= 0) {
+          const updated = [...prevLogs];
+          updated[todayLogIndex] = {
+            ...updated[todayLogIndex],
+            methodUsed: config.method.type,
+            tasksCompleted: Math.max(
+              updated[todayLogIndex].tasksCompleted || 0,
+              tasks.filter((t) => t.completed).length
+            ),
+          };
+          safeLocalStorageSet('airiser_logs', JSON.stringify(updated));
+          return updated;
+        } else {
+          const newLog: FocusLog = {
+            id: `log-${Date.now()}`,
+            date: nowIso,
+            totalFocusTime: durationSecs,
+            methodUsed: config.method.type,
+            tasksCompleted: tasks.filter((t) => t.completed).length,
+          };
+          const updated = [newLog, ...prevLogs];
+          safeLocalStorageSet('airiser_logs', JSON.stringify(updated));
+          return updated;
+        }
+      });
+
+      // Update streak for today
+      setStreak((prev) => calculateStreakOnActivity(prev));
+
+      // Open the rich post-focus session summary modal
+      setIsSessionSummaryOpen(true);
+    },
+    [config.method, tasks, calculateStreakOnActivity]
+  );
 
   const handleSaveBreakNote = (note: string) => {
     setNotepadContent((prev) => prev + `\n\n--- Break Note (${new Date().toLocaleTimeString()}) ---\n${note}`);
@@ -1315,6 +1280,49 @@ export function App() {
       />
 
       {/* 10. Modals */}
+      <FocusSessionSummaryModal
+        isOpen={isSessionSummaryOpen}
+        onClose={() => setIsSessionSummaryOpen(false)}
+        sessionData={lastCompletedSession}
+        tasks={tasks}
+        onToggleTask={(taskId) => {
+          const updated = tasks.map((t) => (t.id === taskId ? { ...t, completed: !t.completed } : t));
+          handleTasksChange(updated);
+        }}
+        onAddTask={(title, priority) => {
+          const newTask: Task = {
+            id: `task-${Date.now()}`,
+            title,
+            completed: false,
+            priority: priority || 'medium',
+            createdAt: new Date().toISOString(),
+          };
+          handleTasksChange([...tasks, newTask]);
+        }}
+        streak={streak}
+        todayTotalFocusSeconds={
+          logs.find(
+            (l) =>
+              l.date &&
+              (l.date.startsWith(getLocalDateString()) ||
+                getLocalDateString(new Date(l.date)) === getLocalDateString())
+          )?.totalFocusTime || 0
+        }
+        onStartBreak={() => {
+          if (lastCompletedSession?.isLongBreakNext) {
+            setTimerStatus('LONG_BREAK');
+          } else {
+            setTimerStatus('BREAK');
+          }
+          setIsSessionSummaryOpen(false);
+        }}
+        onStartNextFocus={() => {
+          setTimerStatus('FOCUS');
+          setIsSessionSummaryOpen(false);
+        }}
+        onSaveBreakNote={handleSaveBreakNote}
+      />
+
       <BreakReflectionModal
         isOpen={isBreakModalOpen}
         tasks={tasks}

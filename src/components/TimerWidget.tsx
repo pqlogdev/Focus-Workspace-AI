@@ -43,13 +43,19 @@ import {
   AlertCircle
 } from 'lucide-react';
 
+export interface SessionCompletionData {
+  focusDurationSeconds: number;
+  cycleNumber: number;
+  isLongBreakNext: boolean;
+}
+
 interface TimerWidgetProps {
   methodConfig: FocusMethodConfig;
   status: TimerStatus;
   onStatusChange: (newStatus: TimerStatus) => void;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
-  onCompleteCycle: () => void;
+  onCompleteCycle: (sessionData?: SessionCompletionData) => void;
   onAccrueFocusTime?: (seconds: number) => void;
   onOpenMethodCustomizer: () => void;
   appearance?: WorkspaceAppearanceConfig;
@@ -653,9 +659,16 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
 
     if (status === 'FOCUS') {
       audioSynth.playChime(chimeChoice as any);
-      onCompleteCycle();
+      const isLongBreak = currentCycle % methodConfig.cyclesBeforeLongBreak === 0;
+      const accruedSecs = isFlowtime ? remainingSeconds : methodConfig.workDuration;
 
-      if (currentCycle % methodConfig.cyclesBeforeLongBreak === 0) {
+      onCompleteCycle({
+        focusDurationSeconds: accruedSecs > 0 ? accruedSecs : methodConfig.workDuration,
+        cycleNumber: currentCycle,
+        isLongBreakNext: isLongBreak,
+      });
+
+      if (isLongBreak) {
         onStatusChange('LONG_BREAK');
       } else {
         onStatusChange('BREAK');
@@ -670,7 +683,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   const skipState = () => {
     setAutoPauseNotice(null);
     if (status === 'FOCUS') {
-      onStatusChange('BREAK');
+      handleCycleComplete();
     } else {
       onStatusChange('FOCUS');
     }

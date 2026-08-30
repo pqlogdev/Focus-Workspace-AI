@@ -544,6 +544,115 @@ class AmbientSynthesizer {
             noise.disconnect();
           } catch {}
         };
+      } else if (type === 'stream') {
+        // Mountain stream & babbling brook: cascading filtered noise with gentle water ripple bubbles
+        const bufferSize = ctx.sampleRate * 3;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < bufferSize; i++) {
+          const white = Math.random() * 2 - 1;
+          b0 = 0.96 * b0 + white * 0.04;
+          b1 = 0.91 * b1 + white * 0.09;
+          b2 = 0.85 * b2 + white * 0.15;
+          data[i] = (b0 + b1 + b2) * 0.55;
+        }
+
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        noise.loop = true;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(1100, ctx.currentTime);
+        filter.Q.setValueAtTime(0.7, ctx.currentTime);
+
+        const lfo = ctx.createOscillator();
+        lfo.frequency.setValueAtTime(0.35, ctx.currentTime); // gentle brook current modulation
+
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.setValueAtTime(250, ctx.currentTime);
+
+        lfo.connect(lfoGain);
+        lfoGain.connect(filter.frequency);
+
+        noise.connect(filter);
+        filter.connect(masterGain);
+
+        noise.start();
+        lfo.start();
+
+        // Subtle water droplet bubbling
+        const bubbleInterval = setInterval(() => {
+          if (!this.activeNodes.has(id)) return;
+          if (Math.random() > 0.45) {
+            const bOsc = ctx.createOscillator();
+            const bGain = ctx.createGain();
+            bOsc.type = 'sine';
+            const baseF = 1200 + Math.random() * 1400;
+            bOsc.frequency.setValueAtTime(baseF, ctx.currentTime);
+            bOsc.frequency.exponentialRampToValueAtTime(baseF + 450, ctx.currentTime + 0.07);
+
+            bGain.gain.setValueAtTime(0.02 * Math.random(), ctx.currentTime);
+            bGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.07);
+
+            bOsc.connect(bGain);
+            bGain.connect(masterGain);
+            bOsc.start();
+            bOsc.stop(ctx.currentTime + 0.07);
+          }
+        }, 300);
+
+        stopFn = () => {
+          clearInterval(bubbleInterval);
+          try {
+            noise.stop();
+            lfo.stop();
+            noise.disconnect();
+            lfo.disconnect();
+          } catch {}
+        };
+      } else if (type === 'wind') {
+        // Mountain breeze and gentle wind gusts
+        const bufferSize = ctx.sampleRate * 4;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+        }
+
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        noise.loop = true;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(320, ctx.currentTime);
+        filter.Q.setValueAtTime(1.8, ctx.currentTime);
+
+        const lfo = ctx.createOscillator();
+        lfo.frequency.setValueAtTime(0.08, ctx.currentTime); // slow 12s gust swell
+
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.setValueAtTime(180, ctx.currentTime);
+
+        lfo.connect(lfoGain);
+        lfoGain.connect(filter.frequency);
+
+        noise.connect(filter);
+        filter.connect(masterGain);
+
+        noise.start();
+        lfo.start();
+
+        stopFn = () => {
+          try {
+            noise.stop();
+            lfo.stop();
+            noise.disconnect();
+            lfo.disconnect();
+          } catch {}
+        };
       } else if (type === 'crickets') {
         // Gentle night crickets periodic bursts
         const cricketInterval = setInterval(() => {

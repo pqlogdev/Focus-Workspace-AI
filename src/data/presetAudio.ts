@@ -127,5 +127,21 @@ export const PRESET_AMBIENT_TRACKS: AmbientTrack[] = [
     type: 'thunder',
     volume: 0.5,
     active: false,
+  },
+  {
+    id: 'ambient-stream',
+    name: 'Mountain Stream',
+    icon: 'Waves',
+    type: 'stream',
+    volume: 0.5,
+    active: false,
+  },
+  {
+    id: 'ambient-wind',
+    name: 'Mountain Wind',
+    icon: 'Wind',
+    type: 'wind',
+    volume: 0.45,
+    active: false,
   }
 ];
