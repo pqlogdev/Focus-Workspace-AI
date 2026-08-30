@@ -20,6 +20,7 @@ interface TaskPlannerSidebarProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenSoundGenerator?: () => void;
+  canCustomize?: boolean;
 }
 
 export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
@@ -28,6 +29,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
   isOpen,
   onClose,
   onOpenSoundGenerator,
+  canCustomize = true,
 }) => {
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [taskFilter, setTaskFilter] = useState<'all' | 'active' | 'done'>('all');
@@ -102,11 +104,19 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
       localStorage.removeItem('airiser_tasks_position');
     };
 
+    const handleSyncRemotePosition = (e: any) => {
+      if (e.detail?.widget === 'tasks' && e.detail.position) {
+        setPosition(e.detail.position);
+      }
+    };
+
     window.addEventListener('resize', validatePosition);
     window.addEventListener('reset-all-positions', handleReset);
+    window.addEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
     return () => {
       window.removeEventListener('resize', validatePosition);
       window.removeEventListener('reset-all-positions', handleReset);
+      window.removeEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
       if (dragRef.current.rafId !== null) cancelAnimationFrame(dragRef.current.rafId);
     };
   }, []);
@@ -120,6 +130,7 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
   }, [position]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCustomize) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||
       (e.target as HTMLElement).closest('button') ||
@@ -187,10 +198,14 @@ export const TaskPlannerSidebar: React.FC<TaskPlannerSidebarProps> = ({
         dragRef.current.rafId = null;
       }
       const finalY = dragRef.current.pendingY < 45 ? 12 : dragRef.current.pendingY;
-      setPosition({
+      const finalPos = {
         x: dragRef.current.pendingX,
         y: finalY,
-      });
+      };
+      setPosition(finalPos);
+      window.dispatchEvent(new CustomEvent('widget-position-changed', {
+        detail: { widget: 'tasks', position: finalPos }
+      }));
       setIsDragging(false);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);

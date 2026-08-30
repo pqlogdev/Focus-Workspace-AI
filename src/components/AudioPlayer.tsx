@@ -74,6 +74,7 @@ interface AudioPlayerProps {
   onUpdateAppearance?: (changes: Partial<WorkspaceAppearanceConfig>) => void;
   isHighlighted?: boolean;
   onOpenSoundGenerator?: () => void;
+  canCustomize?: boolean;
 }
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
@@ -86,6 +87,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   onUpdateAppearance,
   isHighlighted = false,
   onOpenSoundGenerator,
+  canCustomize = true,
 }) => {
   const audioCfg = audioConfig || config || {};
 
@@ -205,12 +207,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       localStorage.removeItem('airiser_audio_position');
     };
 
+    const handleSyncRemotePosition = (e: any) => {
+      if (e.detail?.widget === 'audio' && e.detail.position) {
+        setPosition(e.detail.position);
+      }
+    };
+
     validatePosition();
     window.addEventListener('resize', validatePosition);
     window.addEventListener('reset-audio-position', handleReset);
+    window.addEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
     return () => {
       window.removeEventListener('resize', validatePosition);
       window.removeEventListener('reset-audio-position', handleReset);
+      window.removeEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
       if (dragRef.current.rafId !== null) {
         cancelAnimationFrame(dragRef.current.rafId);
       }
@@ -230,6 +240,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   }, [currentTrackIndex]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCustomize) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||
       (e.target as HTMLElement).closest('button') ||
@@ -299,10 +310,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       }
       // If dropped near header top zone (y < 45), snap flush into header row at y=12
       const finalY = dragRef.current.pendingY < 45 ? 12 : dragRef.current.pendingY;
-      setPosition({
+      const finalPos = {
         x: dragRef.current.pendingX,
         y: finalY,
-      });
+      };
+      setPosition(finalPos);
+      window.dispatchEvent(new CustomEvent('widget-position-changed', {
+        detail: { widget: 'audio', position: finalPos }
+      }));
       setIsDragging(false);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);

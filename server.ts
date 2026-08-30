@@ -402,6 +402,9 @@ app.post('/api/rooms', (req, res) => {
     },
     votesToSkipBreak: [],
     syncAtmosphere: false,
+    syncWorkspace: true,
+    allowMemberCustomization: req.body.allowMemberCustomization ?? true,
+    sharedNotes: req.body.initialNotes || req.body.sharedNotes || [],
     config: req.body.config || undefined,
     createdAt: new Date().toISOString(),
   };
@@ -896,21 +899,91 @@ wss.on('connection', (ws: WebSocket) => {
           }
           broadcastRoomUpdate(roomCode);
         }
+      } else if (data.type === 'SYNC_WORKSPACE') {
+        let room = roomsStore.get(roomCode);
+        if (room) {
+          const pId = data.participantId || socketMeta.get(ws)?.participantId;
+          const isHost = room.hostId === pId;
+          if (isHost || room.allowMemberCustomization !== false) {
+            if (data.config) {
+              room.config = data.config;
+            }
+            if (data.sharedNotes !== undefined) {
+              room.sharedNotes = data.sharedNotes;
+            }
+            room.syncWorkspace = true;
+            broadcastRoomUpdate(roomCode);
+          }
+        }
+      } else if (data.type === 'TOGGLE_MEMBER_CUSTOMIZATION') {
+        let room = roomsStore.get(roomCode);
+        if (room) {
+          const pId = data.participantId || socketMeta.get(ws)?.participantId;
+          if (room.hostId === pId) {
+            room.allowMemberCustomization = !!data.allowMemberCustomization;
+            if (!room.chatMessages) room.chatMessages = [];
+            room.chatMessages.push({
+              id: `msg-perm-${Date.now()}`,
+              senderId: 'system',
+              senderName: 'Room Settings',
+              text: room.allowMemberCustomization
+                ? `Host enabled member workspace customization & widget dragging.`
+                : `Host restricted workspace customization & dragging to host only.`,
+              timestamp: new Date().toISOString(),
+              isSystem: true,
+            });
+            broadcastRoomUpdate(roomCode);
+          }
+        }
+      } else if (data.type === 'SYNC_WIDGET_POSITION') {
+        let room = roomsStore.get(roomCode);
+        if (room && data.widget && data.position) {
+          const pId = data.participantId || socketMeta.get(ws)?.participantId;
+          const isHost = room.hostId === pId;
+          if (isHost || room.allowMemberCustomization !== false) {
+            if (!room.config) room.config = {};
+            if (!room.config.layout) room.config.layout = {};
+            if (!room.config.layout.positions) room.config.layout.positions = {};
+            room.config.layout.positions[data.widget] = data.position;
+            // Broadcast live coordinates to peers
+            broadcastToRoom(roomCode, {
+              type: 'WIDGET_POSITION_UPDATE',
+              widget: data.widget,
+              position: data.position,
+              senderId: pId,
+            }, ws);
+          }
+        }
+      } else if (data.type === 'UPDATE_STICKY_NOTES') {
+        let room = roomsStore.get(roomCode);
+        if (room && data.notes) {
+          const pId = data.participantId || socketMeta.get(ws)?.participantId;
+          const isHost = room.hostId === pId;
+          if (isHost || room.allowMemberCustomization !== false) {
+            room.sharedNotes = data.notes;
+            broadcastRoomUpdate(roomCode);
+          }
+        }
       } else if (data.type === 'SYNC_ATMOSPHERE') {
         let room = roomsStore.get(roomCode);
         if (room && data.config) {
-          room.config = data.config;
-          room.syncAtmosphere = true;
-          if (!room.chatMessages) room.chatMessages = [];
-          room.chatMessages.push({
-            id: `msg-atmo-${Date.now()}`,
-            senderId: 'system',
-            senderName: 'Atmosphere Sync',
-            text: `Host updated room atmosphere & background.`,
-            timestamp: new Date().toISOString(),
-            isSystem: true,
-          });
-          broadcastRoomUpdate(roomCode);
+          const pId = data.participantId || socketMeta.get(ws)?.participantId;
+          const isHost = room.hostId === pId;
+          if (isHost || room.allowMemberCustomization !== false) {
+            room.config = data.config;
+            room.syncAtmosphere = true;
+            room.syncWorkspace = true;
+            if (!room.chatMessages) room.chatMessages = [];
+            room.chatMessages.push({
+              id: `msg-atmo-${Date.now()}`,
+              senderId: 'system',
+              senderName: 'Atmosphere Sync',
+              text: `${data.senderName || (isHost ? 'Host' : 'A member')} updated room atmosphere & customization.`,
+              timestamp: new Date().toISOString(),
+              isSystem: true,
+            });
+            broadcastRoomUpdate(roomCode);
+          }
         }
       } else if (data.type === 'VOTE_SKIP') {
         let room = roomsStore.get(roomCode);

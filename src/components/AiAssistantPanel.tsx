@@ -21,6 +21,7 @@ interface AiAssistantPanelProps {
   onClose: () => void;
   tasks: Task[];
   notes: string;
+  canCustomize?: boolean;
 }
 
 interface Message {
@@ -42,6 +43,7 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
   onClose,
   tasks,
   notes,
+  canCustomize = true,
 }) => {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -89,9 +91,9 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
           typeof parsed?.width === 'number' &&
           typeof parsed?.height === 'number' &&
           parsed.width >= 300 &&
-          parsed.width <= window.innerWidth &&
-          parsed.height >= 340 &&
-          parsed.height <= window.innerHeight
+          parsed.width <= 800 &&
+          parsed.height >= 400 &&
+          parsed.height <= 900
         ) {
           return parsed;
         }
@@ -101,6 +103,7 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
   });
   const [isResizing, setIsResizing] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
   const prevSizeRef = useRef<PanelSize>(DEFAULT_SIZE);
 
   const dragRef = useRef<{
@@ -145,6 +148,14 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
     pendingHeight: 540,
   });
 
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isOpen]);
+
   useEffect(() => {
     const validatePositionAndSize = () => {
       setPosition((prev) => {
@@ -161,8 +172,8 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       });
 
       setSize((prev) => {
-        const maxWidth = Math.min(window.innerWidth - 40, 950);
-        const maxHeight = Math.min(window.innerHeight - 60, 900);
+        const maxWidth = window.innerWidth - 40;
+        const maxHeight = window.innerHeight - 80;
         if (prev.width > maxWidth || prev.height > maxHeight) {
           return {
             width: Math.min(prev.width, maxWidth),
@@ -180,11 +191,19 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       localStorage.removeItem('airiser_ai_chat_size');
     };
 
+    const handleSyncRemotePosition = (e: any) => {
+      if (e.detail?.widget === 'aiChat' && e.detail.position) {
+        setPosition(e.detail.position);
+      }
+    };
+
     window.addEventListener('resize', validatePositionAndSize);
     window.addEventListener('reset-all-positions', handleReset);
+    window.addEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
     return () => {
       window.removeEventListener('resize', validatePositionAndSize);
       window.removeEventListener('reset-all-positions', handleReset);
+      window.removeEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
       if (dragRef.current.rafId !== null) cancelAnimationFrame(dragRef.current.rafId);
       if (resizeRef.current.rafId !== null) cancelAnimationFrame(resizeRef.current.rafId);
     };
@@ -206,6 +225,7 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
 
   // Drag handlers
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCustomize) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||
       (e.target as HTMLElement).closest('button') ||
@@ -276,10 +296,14 @@ export const AiAssistantPanel: React.FC<AiAssistantPanelProps> = ({
       }
       // If dropped near header top zone (y < 45), snap flush into header row at y=12
       const finalY = dragRef.current.pendingY < 45 ? 12 : dragRef.current.pendingY;
-      setPosition({
+      const finalPos = {
         x: dragRef.current.pendingX,
         y: finalY,
-      });
+      };
+      setPosition(finalPos);
+      window.dispatchEvent(new CustomEvent('widget-position-changed', {
+        detail: { widget: 'aiChat', position: finalPos }
+      }));
       setIsDragging(false);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);

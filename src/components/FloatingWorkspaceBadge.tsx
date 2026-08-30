@@ -54,6 +54,7 @@ interface FloatingWorkspaceBadgeProps {
   onToggleAiChat: () => void;
   onToggleZenMode: () => void;
   onToggleSoundGenerator?: () => void;
+  canCustomize?: boolean;
 }
 
 export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
@@ -80,6 +81,7 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
   onToggleAiChat,
   onToggleZenMode,
   onToggleSoundGenerator,
+  canCustomize = true,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -157,13 +159,21 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
       localStorage.removeItem('airiser_dock_position');
     };
 
+    const handleSyncRemotePosition = (e: any) => {
+      if (e.detail?.widget === 'header' && e.detail.position) {
+        setHeaderPosition(e.detail.position);
+      }
+    };
+
     window.addEventListener('resize', validatePositions);
     window.addEventListener('reset-header-position', handleResetAll);
     window.addEventListener('reset-all-positions', handleResetAll);
+    window.addEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
     return () => {
       window.removeEventListener('resize', validatePositions);
       window.removeEventListener('reset-header-position', handleResetAll);
       window.removeEventListener('reset-all-positions', handleResetAll);
+      window.removeEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
       if (headerDragRef.current.rafId !== null) cancelAnimationFrame(headerDragRef.current.rafId);
     };
   }, []);
@@ -239,6 +249,7 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
 
   // --- HEADER DRAGGING HANDLERS ---
   const handleHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCustomize) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||
       (e.target as HTMLElement).closest('button') ||
@@ -305,10 +316,14 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
         cancelAnimationFrame(headerDragRef.current.rafId);
         headerDragRef.current.rafId = null;
       }
-      setHeaderPosition({
+      const finalPos = {
         x: headerDragRef.current.pendingX,
         y: headerDragRef.current.pendingY,
-      });
+      };
+      setHeaderPosition(finalPos);
+      window.dispatchEvent(new CustomEvent('widget-position-changed', {
+        detail: { widget: 'header', position: finalPos }
+      }));
       setIsDraggingHeader(false);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);

@@ -363,6 +363,8 @@ export interface RoomState {
   };
   votesToSkipBreak: string[]; // participant IDs
   syncAtmosphere?: boolean;
+  syncWorkspace?: boolean;
+  allowMemberCustomization?: boolean;
   config?: WorkspaceConfig;
   createdAt?: string;
 }

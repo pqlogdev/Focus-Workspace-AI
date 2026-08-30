@@ -26,6 +26,7 @@ interface NotepadPanelProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenSoundGenerator?: () => void;
+  canCustomize?: boolean;
 }
 
 export const NotepadPanel: React.FC<NotepadPanelProps> = ({
@@ -34,6 +35,7 @@ export const NotepadPanel: React.FC<NotepadPanelProps> = ({
   isOpen,
   onClose,
   onOpenSoundGenerator,
+  canCustomize = true,
 }) => {
   const [isPersistent, setIsPersistent] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -106,11 +108,19 @@ export const NotepadPanel: React.FC<NotepadPanelProps> = ({
       localStorage.removeItem('airiser_notepad_position');
     };
 
+    const handleSyncRemotePosition = (e: any) => {
+      if (e.detail?.widget === 'notepad' && e.detail.position) {
+        setPosition(e.detail.position);
+      }
+    };
+
     window.addEventListener('resize', validatePosition);
     window.addEventListener('reset-all-positions', handleReset);
+    window.addEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
     return () => {
       window.removeEventListener('resize', validatePosition);
       window.removeEventListener('reset-all-positions', handleReset);
+      window.removeEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
       if (dragRef.current.rafId !== null) cancelAnimationFrame(dragRef.current.rafId);
     };
   }, []);
@@ -124,6 +134,7 @@ export const NotepadPanel: React.FC<NotepadPanelProps> = ({
   }, [position]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCustomize) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||
       (e.target as HTMLElement).closest('button') ||
@@ -194,10 +205,14 @@ export const NotepadPanel: React.FC<NotepadPanelProps> = ({
       }
       // If dropped near header top zone (y < 45), snap flush into header row at y=12
       const finalY = dragRef.current.pendingY < 45 ? 12 : dragRef.current.pendingY;
-      setPosition({
+      const finalPos = {
         x: dragRef.current.pendingX,
         y: finalY,
-      });
+      };
+      setPosition(finalPos);
+      window.dispatchEvent(new CustomEvent('widget-position-changed', {
+        detail: { widget: 'notepad', position: finalPos }
+      }));
       setIsDragging(false);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);

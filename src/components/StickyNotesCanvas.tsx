@@ -22,6 +22,7 @@ interface StickyNotesCanvasProps {
   notes: StickyNote[];
   onChangeNotes: (notes: StickyNote[]) => void;
   isHighlighted?: boolean;
+  canCustomize?: boolean;
 }
 
 const COLOR_OPTIONS = [
@@ -40,7 +41,12 @@ const PRESET_SIZES = [
   { label: 'Wide', width: 480, height: 260 },
 ];
 
-export const StickyNotesCanvas: React.FC<StickyNotesCanvasProps> = ({ notes, onChangeNotes, isHighlighted = false }) => {
+export const StickyNotesCanvas: React.FC<StickyNotesCanvasProps> = ({
+  notes,
+  onChangeNotes,
+  isHighlighted = false,
+  canCustomize = true,
+}) => {
   const [activeDraggingId, setActiveDraggingId] = useState<string | null>(null);
   const [activeResizingId, setActiveResizingId] = useState<string | null>(null);
   const [activeImageResizingId, setActiveImageResizingId] = useState<string | null>(null);
@@ -292,6 +298,7 @@ export const StickyNotesCanvas: React.FC<StickyNotesCanvasProps> = ({ notes, onC
 
   // --- DRAGGING LOGIC (Smooth 60fps/120fps Pointer Capture) ---
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>, note: StickyNote) => {
+    if (!canCustomize) return;
     if (note.isPinned) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||

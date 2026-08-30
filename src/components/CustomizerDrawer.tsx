@@ -25,6 +25,7 @@ import { ColorPickerControl } from './ColorPickerControl';
 import { AudioUploadModal } from './AudioUploadModal';
 import {
   X,
+  Lock,
   Image,
   Music,
   Clock,
@@ -104,6 +105,7 @@ interface CustomizerDrawerProps {
   onOpenAiChat?: () => void;
   onOpenSoundGenerator?: () => void;
   onCustomizingPanelChange?: (panel: 'timer' | 'music' | 'notes' | 'canvas' | null) => void;
+  canCustomize?: boolean;
 }
 
 export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
@@ -129,6 +131,7 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
   onOpenAiChat,
   onOpenSoundGenerator,
   onCustomizingPanelChange,
+  canCustomize = true,
 }) => {
   const [activeTab, setActiveTab] = useState<'background' | 'audio' | 'method' | 'appearance'>(initialTab);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -592,6 +595,19 @@ export const CustomizerDrawer: React.FC<CustomizerDrawerProps> = ({
             <span>Stats</span>
           </button>
         </div>
+
+        {/* Room Permission Banner if customization is restricted */}
+        {!canCustomize && (
+          <div className="my-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center gap-2.5 text-xs text-amber-300">
+            <Lock className="w-4 h-4 shrink-0 text-amber-400" />
+            <div>
+              <p className="font-bold">Host-Controlled Room Active</p>
+              <p className="text-[11px] text-amber-400/80">
+                Workspace customization is currently managed by the Host. You are viewing the synchronized room layout.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Navigation Tabs */}
         <div className="grid grid-cols-4 gap-1.5 p-1 bg-slate-950 rounded-2xl border border-slate-800/80 my-4 text-xs font-semibold">

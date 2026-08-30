@@ -61,6 +61,7 @@ interface TimerWidgetProps {
   appearance?: WorkspaceAppearanceConfig;
   onUpdateAppearance?: (changes: Partial<WorkspaceAppearanceConfig>) => void;
   isHighlighted?: boolean;
+  canCustomize?: boolean;
 }
 
 export const TimerWidget: React.FC<TimerWidgetProps> = ({
@@ -75,6 +76,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   appearance,
   onUpdateAppearance,
   isHighlighted = false,
+  canCustomize = true,
 }) => {
   const isFlowtime = methodConfig.type === 'flowtime';
 
@@ -266,13 +268,21 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
       handleExpandFullTimer();
     };
 
+    const handleSyncRemotePosition = (e: any) => {
+      if (e.detail?.widget === 'timer' && e.detail.position) {
+        setPosition(e.detail.position);
+      }
+    };
+
     window.addEventListener('reset-all-positions', handleResetAll);
     window.addEventListener('reset-timer-position', handleResetAll);
     window.addEventListener('expand-timer', handleResetAll);
+    window.addEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
     return () => {
       window.removeEventListener('reset-all-positions', handleResetAll);
       window.removeEventListener('reset-timer-position', handleResetAll);
       window.removeEventListener('expand-timer', handleResetAll);
+      window.removeEventListener('sync-remote-widget-position' as any, handleSyncRemotePosition);
       if (dragRef.current.rafId !== null) {
         cancelAnimationFrame(dragRef.current.rafId);
       }
@@ -283,6 +293,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
   }, [onUpdateAppearance]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCustomize) return;
     if (
       (e.target as HTMLElement).tagName === 'BUTTON' ||
       (e.target as HTMLElement).closest('button') ||
@@ -338,10 +349,14 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
       window.removeEventListener('pointercancel', handlePointerUp);
 
       const finalY = dragRef.current.pendingY < 45 ? 12 : dragRef.current.pendingY;
-      setPosition({
+      const finalPos = {
         x: dragRef.current.pendingX,
         y: finalY,
-      });
+      };
+      setPosition(finalPos);
+      window.dispatchEvent(new CustomEvent('widget-position-changed', {
+        detail: { widget: 'timer', position: finalPos }
+      }));
       setIsDragging(false);
     };
 
@@ -355,6 +370,7 @@ export const TimerWidget: React.FC<TimerWidgetProps> = ({
     e: React.PointerEvent<HTMLDivElement>,
     direction: 'se' | 'sw' | 'ne' | 'nw' = 'se'
   ) => {
+    if (!canCustomize) return;
     e.preventDefault();
     e.stopPropagation();
 

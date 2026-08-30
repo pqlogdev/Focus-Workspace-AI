@@ -147,6 +147,16 @@ export function App() {
     return initial;
   });
 
+  // 4. Firebase Auth & Cloud Sync State
+  const [user, setUser] = useState<User | null>(null);
+  const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const hasHydratedFromCloud = useRef<boolean>(false);
+  const syncTimeoutRef = useRef<any>(null);
+
+  // 5. Collaborative Room State & Identity
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; emoji: string; left: number }[]>([]);
 
@@ -171,12 +181,100 @@ export function App() {
     }, 2800);
   }, []);
 
+  // Room identity and collaborative customization permission
+  const myParticipantId = user?.uid || 
+    localStorage.getItem('focus_participant_id') || 
+    'user-guest';
+
+  const isHost = roomState?.hostId === myParticipantId;
+  const canCustomize = !roomState || isHost || (roomState.allowMemberCustomization !== false);
+  const isApplyingRemoteUpdateRef = useRef(false);
+  const prevConfigJsonRef = useRef<string>('');
+  const prevStickyNotesJsonRef = useRef<string>('');
+
   // When room is active, synchronize timer if host changes it
   useEffect(() => {
     if (roomState?.timerState?.status && roomState.timerState.status !== timerStatus) {
       setTimerStatus(roomState.timerState.status);
     }
   }, [roomState?.timerState?.status]);
+
+  // Real-time broadcast of workspace config & sticky notes when in a room
+  useEffect(() => {
+    if (!roomState?.code || !canCustomize || isApplyingRemoteUpdateRef.current) return;
+
+    const configJson = JSON.stringify(config);
+    const stickyNotesJson = JSON.stringify(stickyNotes);
+
+    if (
+      configJson === prevConfigJsonRef.current &&
+      stickyNotesJson === prevStickyNotesJsonRef.current
+    ) {
+      return;
+    }
+
+    prevConfigJsonRef.current = configJson;
+    prevStickyNotesJsonRef.current = stickyNotesJson;
+
+    const timeoutId = setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('send-room-ws', {
+        detail: {
+          type: 'SYNC_WORKSPACE',
+          roomCode: roomState.code,
+          participantId: myParticipantId,
+          config,
+          sharedNotes: stickyNotes,
+        }
+      }));
+    }, 150);
+
+    return () => clearTimeout(timeoutId);
+  }, [config, stickyNotes, roomState?.code, canCustomize, myParticipantId]);
+
+  // Listen for local widget position changes from dragged widgets and sync
+  useEffect(() => {
+    const handleWidgetPositionChanged = (e: any) => {
+      const { widget, position } = e.detail || {};
+      if (!widget || !position) return;
+
+      setConfig((prev) => {
+        const prevPositions = prev.layout?.positions || {};
+        if (
+          prevPositions[widget]?.x === position.x &&
+          prevPositions[widget]?.y === position.y
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          layout: {
+            ...(prev.layout || {}),
+            positions: {
+              ...prevPositions,
+              [widget]: position,
+            },
+          },
+        };
+      });
+
+      if (roomState && canCustomize && !isApplyingRemoteUpdateRef.current) {
+        window.dispatchEvent(new CustomEvent('send-room-ws', {
+          detail: {
+            type: 'SYNC_WIDGET_POSITION',
+            roomCode: roomState.code,
+            participantId: myParticipantId,
+            widget,
+            position,
+          }
+        }));
+      }
+    };
+
+    window.addEventListener('widget-position-changed' as any, handleWidgetPositionChanged);
+    return () => {
+      window.removeEventListener('widget-position-changed' as any, handleWidgetPositionChanged);
+    };
+  }, [roomState?.code, canCustomize, myParticipantId]);
 
   // 5. Custom Images Library & Reset / Rollback System State
   const [customImages, setCustomImages] = useState<CustomImageRecord[]>(() =>
@@ -189,15 +287,6 @@ export function App() {
     safeLocalStorageJSONGet<RollbackSnapshot | null>('airiser_rollback_snapshot', null)
   );
   const [rollbackToast, setRollbackToast] = useState<{ message: string; timestamp: number } | null>(null);
-
-  // 6. Firebase Auth & Cloud Sync State
-  const [user, setUser] = useState<User | null>(null);
-  const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
-  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const hasHydratedFromCloud = useRef<boolean>(false);
-  const syncTimeoutRef = useRef<any>(null);
 
   // 6.1. Active Template & Template Auto-Sync Engine
   const [activeTemplate, setActiveTemplate] = useState<Template | null>(() =>
@@ -1065,6 +1154,7 @@ export function App() {
         currentStreak={streak.currentStreak}
         viewMode={viewMode}
         pendingTasksCount={tasks.filter((t) => !t.completed).length}
+        canCustomize={canCustomize}
         searchBarElement={
           <GlobalSearchBar
             config={config}
@@ -1150,6 +1240,7 @@ export function App() {
           onViewModeChange={setViewMode}
           onCompleteCycle={handleCompleteCycle}
           onAccrueFocusTime={handleAccrueFocusTime}
+          canCustomize={canCustomize}
           onOpenMethodCustomizer={() => {
             setCustomizerInitialTab('method');
             setActiveCustomizingPanel('timer');
@@ -1177,6 +1268,7 @@ export function App() {
           onChangeAudioConfig={(audio) => setConfig({ ...config, audio })}
           timerStatus={timerStatus}
           appearance={config.appearance}
+          canCustomize={canCustomize}
           isHighlighted={isCustomizerOpen && (activeCustomizingPanel === 'music' || customizerInitialTab === 'audio')}
           onOpenSoundGenerator={() => setIsSoundGenOpen(true)}
           onUpdateAppearance={(changes) =>
@@ -1196,6 +1288,7 @@ export function App() {
         <StickyNotesCanvas
           notes={stickyNotes}
           onChangeNotes={setStickyNotes}
+          canCustomize={canCustomize}
           isHighlighted={isCustomizerOpen && activeCustomizingPanel === 'notes'}
         />
       )}
@@ -1206,6 +1299,7 @@ export function App() {
         onChangeTasks={handleTasksChange}
         isOpen={isTasksOpen}
         onClose={() => setIsTasksOpen(false)}
+        canCustomize={canCustomize}
         onOpenSoundGenerator={() => setIsSoundGenOpen(true)}
       />
 
@@ -1215,6 +1309,7 @@ export function App() {
         onChangeContent={setNotepadContent}
         isOpen={isNotesOpen}
         onClose={() => setIsNotesOpen(false)}
+        canCustomize={canCustomize}
         onOpenSoundGenerator={() => setIsSoundGenOpen(true)}
       />
 
@@ -1224,6 +1319,7 @@ export function App() {
         onClose={() => setIsAiChatOpen(false)}
         tasks={tasks}
         notes={notepadContent}
+        canCustomize={canCustomize}
       />
 
       {/* 9. Workspace Customizer Drawer */}
@@ -1237,6 +1333,7 @@ export function App() {
         onChangeConfig={setConfig}
         initialTab={customizerInitialTab}
         savedCustomImages={customImages}
+        canCustomize={canCustomize}
         onSaveCustomImage={handleSaveCustomImage}
         onDeleteCustomImage={handleDeleteCustomImage}
         onResetToDefault={handleResetToDefault}
@@ -1383,10 +1480,25 @@ export function App() {
         currentTimerStatus={timerStatus}
         currentUser={user}
         currentConfig={config}
-        onApplyAtmosphere={(newConfig) => {
+        currentStickyNotes={stickyNotes}
+        onApplyAtmosphere={(newConfig, newNotes) => {
+          isApplyingRemoteUpdateRef.current = true;
           setConfig(newConfig);
+          if (newNotes && Array.isArray(newNotes)) {
+            setStickyNotes(newNotes);
+          }
+          if (newConfig.layout?.positions) {
+            Object.entries(newConfig.layout.positions).forEach(([widget, pos]) => {
+              window.dispatchEvent(new CustomEvent('sync-remote-widget-position', {
+                detail: { widget, position: pos }
+              }));
+            });
+          }
+          setTimeout(() => {
+            isApplyingRemoteUpdateRef.current = false;
+          }, 200);
           setRollbackToast({
-            message: '✨ Synchronized room atmosphere & background from Host',
+            message: '✨ Synchronized room workspace & layout in real-time',
             timestamp: Date.now(),
           });
         }}

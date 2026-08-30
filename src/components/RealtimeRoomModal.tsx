@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { RoomState, Task, TimerStatus, WorkspaceConfig, Participant, RoomChatMessage } from '../types';
+import { RoomState, Task, TimerStatus, WorkspaceConfig, Participant, RoomChatMessage, StickyNote } from '../types';
 import {
   Users,
   Plus,
@@ -29,6 +29,10 @@ import {
   Trash2,
   Share2,
   ExternalLink,
+  Lock,
+  Unlock,
+  Move,
+  Layout,
 } from 'lucide-react';
 
 interface RealtimeRoomModalProps {
@@ -39,7 +43,8 @@ interface RealtimeRoomModalProps {
   currentTimerStatus: TimerStatus;
   currentUser: { uid: string; displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
   currentConfig: WorkspaceConfig;
-  onApplyAtmosphere?: (config: WorkspaceConfig) => void;
+  currentStickyNotes?: StickyNote[];
+  onApplyAtmosphere?: (config: WorkspaceConfig, sharedNotes?: StickyNote[]) => void;
   onSendReaction?: (emoji: string) => void;
 }
 
@@ -55,6 +60,7 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
   currentTimerStatus,
   currentUser,
   currentConfig,
+  currentStickyNotes = [],
   onApplyAtmosphere,
   onSendReaction,
 }) => {
@@ -95,6 +101,26 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
   }, [currentUser?.uid, myParticipantId]);
 
   const myDisplayName = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Focus Focuser';
+
+  // Send WS message helper (declared early so hooks can use it)
+  const sendWs = (payload: any) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(payload));
+    }
+  };
+
+  // Listen for window events to send through room WebSocket
+  useEffect(() => {
+    const handleSendRoomWs = (e: any) => {
+      if (e.detail && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(e.detail));
+      }
+    };
+    window.addEventListener('send-room-ws' as any, handleSendRoomWs);
+    return () => {
+      window.removeEventListener('send-room-ws' as any, handleSendRoomWs);
+    };
+  }, []);
 
   // Sync scratchpad when roomState updates from server
   useEffect(() => {
@@ -147,10 +173,14 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
           if (data.type === 'ROOM_UPDATE' && data.room) {
             onRoomStateChange(data.room);
 
-            // If atmosphere was synced and user is participant
-            if (data.room.syncAtmosphere && data.room.config && onApplyAtmosphere) {
-              onApplyAtmosphere(data.room.config);
+            // If atmosphere or entire workspace was synced
+            if ((data.room.syncAtmosphere || data.room.syncWorkspace) && data.room.config && onApplyAtmosphere) {
+              onApplyAtmosphere(data.room.config, data.room.sharedNotes);
             }
+          } else if (data.type === 'WIDGET_POSITION_UPDATE' && data.widget && data.position) {
+            window.dispatchEvent(new CustomEvent('sync-remote-widget-position', {
+              detail: { widget: data.widget, position: data.position }
+            }));
           } else if (data.type === 'EMOJI_REACTION' && onSendReaction) {
             onSendReaction(data.emoji);
           } else if (data.type === 'TYPING_START') {
@@ -205,13 +235,6 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
 
   const isHost = roomState?.hostId === myParticipantId;
 
-  // Send WS message helper
-  const sendWs = (payload: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(payload));
-    }
-  };
-
   // 1. Create Room
   const handleCreateRoom = () => {
     setErrorMessage(null);
@@ -228,6 +251,8 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
         currentGoal: userGoalInput,
         timerStatus: currentTimerStatus,
         config: currentConfig,
+        sharedNotes: currentStickyNotes,
+        allowMemberCustomization: true,
         initialTasks: [
           { id: `st-${Date.now()}-1`, title: '🎯 Complete 1st Pomodoro focus session', completed: false, priority: 'high' },
           { id: `st-${Date.now()}-2`, title: '📝 Sync key notes & questions in scratchpad', completed: false, priority: 'medium' },
@@ -275,79 +300,90 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
         type: 'LEAVE_ROOM',
         participantId: myParticipantId,
       });
+      onRoomStateChange(null);
+      onClose();
     }
-    onRoomStateChange(null);
   };
 
-  // 4. Timer Controls (Host)
-  const handleToggleTimer = () => {
+  // 4. Send Chat Message
+  const handleSendChat = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!chatInput.trim() || !roomState) return;
+
+    const message: RoomChatMessage = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      senderId: myParticipantId,
+      senderName: myDisplayName,
+      senderPhoto: currentUser?.photoURL || undefined,
+      text: chatInput.trim(),
+      timestamp: new Date().toISOString(),
+      isSystem: false,
+    };
+
+    sendWs({
+      type: 'SEND_CHAT',
+      roomCode: roomState.code,
+      message,
+    });
+
+    setChatInput('');
+  };
+
+  // 5. Send Emoji Reaction
+  const handleEmojiReaction = (emoji: string) => {
     if (!roomState) return;
-    const newIsRunning = !roomState.timerState.isRunning;
+    sendWs({
+      type: 'EMOJI_REACTION',
+      roomCode: roomState.code,
+      emoji,
+      senderId: myParticipantId,
+      senderName: myDisplayName,
+    });
+    if (onSendReaction) onSendReaction(emoji);
+  };
+
+  // 6. Host Timer Control
+  const handleToggleTimer = () => {
+    if (!roomState || !isHost) return;
+    const isRunning = !roomState.timerState.isRunning;
     sendWs({
       type: 'UPDATE_TIMER',
+      roomCode: roomState.code,
       timerState: {
         ...roomState.timerState,
-        isRunning: newIsRunning,
+        isRunning,
+        lastUpdated: Date.now(),
       },
     });
   };
 
-  const handleResetTimer = (seconds = 1500) => {
-    if (!roomState) return;
+  const handleResetTimer = () => {
+    if (!roomState || !isHost) return;
     sendWs({
       type: 'UPDATE_TIMER',
+      roomCode: roomState.code,
       timerState: {
         status: 'FOCUS',
-        remainingSeconds: seconds,
+        remainingSeconds: 1500,
+        currentCycle: 1,
         isRunning: false,
-        currentCycle: roomState.timerState.currentCycle,
+        lastUpdated: Date.now(),
       },
     });
   };
 
   const handleSetTimerStatus = (status: TimerStatus, seconds: number) => {
-    if (!roomState) return;
+    if (!roomState || !isHost) return;
     sendWs({
       type: 'UPDATE_TIMER',
+      roomCode: roomState.code,
       timerState: {
         status,
         remainingSeconds: seconds,
-        isRunning: false,
-        currentCycle: roomState.timerState.currentCycle,
+        isRunning: true,
+        lastUpdated: Date.now(),
       },
     });
-  };
-
-  // 5. Send Chat Message
-  const handleSendChat = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!chatInput.trim() || !roomState) return;
-
-    sendWs({
-      type: 'SEND_CHAT',
-      message: {
-        id: `msg-${Date.now()}`,
-        senderId: myParticipantId,
-        senderName: myDisplayName,
-        senderPhoto: currentUser?.photoURL,
-        text: chatInput.trim(),
-        timestamp: new Date().toISOString(),
-      },
-    });
-    setChatInput('');
-  };
-
-  // 6. Send Live Reaction
-  const handleReaction = (emoji: string) => {
-    sendWs({
-      type: 'EMOJI_REACTION',
-      emoji,
-      senderName: myDisplayName,
-      senderId: myParticipantId,
-    });
-    if (onSendReaction) {
-      onSendReaction(emoji);
-    }
   };
 
   // 7. Add Shared Task
@@ -356,7 +392,7 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
     if (!newTaskTitle.trim() || !roomState) return;
 
     const newTask: Task = {
-      id: `task-${Date.now()}`,
+      id: `st-${Date.now()}`,
       title: newTaskTitle.trim(),
       completed: false,
       priority: newTaskPriority,
@@ -365,15 +401,19 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
 
     sendWs({
       type: 'ADD_TASK',
+      roomCode: roomState.code,
       task: newTask,
     });
+
     setNewTaskTitle('');
   };
 
   // 8. Toggle Shared Task
   const handleToggleTask = (taskId: string) => {
+    if (!roomState) return;
     sendWs({
       type: 'TOGGLE_TASK',
+      roomCode: roomState.code,
       taskId,
       actorName: myDisplayName,
     });
@@ -391,12 +431,27 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
     }, 400);
   };
 
-  // 10. Sync Atmosphere (Host broadcasts background & audio)
-  const handleBroadcastAtmosphere = () => {
+  // 10. Sync Atmosphere & Workspace (Broadcasts background, audio, appearance & layout)
+  const handleBroadcastWorkspace = () => {
+    if (!roomState) return;
+    if (!isHost && roomState.allowMemberCustomization === false) return;
+    sendWs({
+      type: 'SYNC_WORKSPACE',
+      roomCode: roomState.code,
+      participantId: myParticipantId,
+      senderName: myDisplayName,
+      config: currentConfig,
+      sharedNotes: currentStickyNotes,
+    });
+  };
+
+  const handleToggleMemberCustomization = (allow: boolean) => {
     if (!roomState || !isHost) return;
     sendWs({
-      type: 'SYNC_ATMOSPHERE',
-      config: currentConfig,
+      type: 'TOGGLE_MEMBER_CUSTOMIZATION',
+      roomCode: roomState.code,
+      participantId: myParticipantId,
+      allowMemberCustomization: allow,
     });
   };
 
@@ -658,7 +713,7 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
                 {EMOJIS.slice(0, 6).map((emoji) => (
                   <button
                     key={emoji}
-                    onClick={() => handleReaction(emoji)}
+                    onClick={() => handleEmojiReaction(emoji)}
                     className="p-1 hover:scale-125 text-base transition transform active:scale-90"
                     title={`Send ${emoji}`}
                   >
@@ -766,7 +821,7 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
                           </button>
 
                           <button
-                            onClick={() => handleResetTimer(1500)}
+                            onClick={() => handleResetTimer()}
                             className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition"
                             title="Reset Timer to 25m"
                           >
@@ -809,30 +864,79 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
                     )}
                   </div>
 
-                  {/* Atmosphere Synchronization */}
-                  <div className="p-5 bg-slate-950/60 rounded-2xl border border-slate-800 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 bg-purple-500/20 text-purple-400 rounded-xl">
-                        <Sparkles className="w-5 h-5" />
+                  {/* Workspace & Customization Synchronization */}
+                  <div className="p-5 bg-slate-950/60 rounded-2xl border border-slate-800 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-gradient-to-tr from-purple-500/20 to-indigo-500/20 text-purple-400 rounded-xl border border-purple-500/30">
+                          <Sparkles className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-xs font-bold text-white">Real-Time Workspace Sync</h4>
+                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                              roomState.allowMemberCustomization !== false
+                                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                                : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                            }`}>
+                              {roomState.allowMemberCustomization !== false ? '🌟 Collaborative Mode' : '🔒 Host-Only Mode'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Syncs wallpapers, ambient soundscapes, timer styles, fonts, and widget positions across the room.
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <h4 className="text-xs font-bold text-white">Broadcast Atmosphere & Soundscape</h4>
-                        <p className="text-[11px] text-slate-400">
-                          {isHost
-                            ? 'Sync your active wallpaper background & audio soundscape to everyone in the room.'
-                            : 'Host can broadcast room background and audio ambiance.'}
-                        </p>
-                      </div>
+
+                      {(isHost || roomState.allowMemberCustomization !== false) && (
+                        <button
+                          onClick={handleBroadcastWorkspace}
+                          className="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/20 active:scale-95"
+                          title="Broadcast your active workspace configuration to all room members"
+                        >
+                          <Radio className="w-3.5 h-3.5" />
+                          <span>Broadcast Workspace</span>
+                        </button>
+                      )}
                     </div>
 
-                    {isHost && (
-                      <button
-                        onClick={handleBroadcastAtmosphere}
-                        className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-purple-600/20"
-                      >
-                        <Radio className="w-3.5 h-3.5" />
-                        <span>Broadcast Now</span>
-                      </button>
+                    {/* Host Permission Switch */}
+                    {isHost ? (
+                      <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Move className="w-3.5 h-3.5 text-indigo-400" />
+                          <div>
+                            <p className="text-xs font-semibold text-slate-200">Allow Members to Customize & Drag Widgets</p>
+                            <p className="text-[10px] text-slate-400">
+                              When enabled, any member can change themes, audio, timer appearance, and reposition widgets for everyone in real-time.
+                            </p>
+                          </div>
+                        </div>
+
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={roomState.allowMemberCustomization !== false}
+                            onChange={(e) => handleToggleMemberCustomization(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                        </label>
+                      </div>
+                    ) : (
+                      <div className="pt-2 border-t border-slate-800/80 flex items-center gap-2 text-xs">
+                        {roomState.allowMemberCustomization !== false ? (
+                          <span className="text-emerald-400 flex items-center gap-1.5 text-[11px]">
+                            <Unlock className="w-3.5 h-3.5" />
+                            Collaborative mode is active. You can customize the workspace and drag widgets in real-time!
+                          </span>
+                        ) : (
+                          <span className="text-amber-400 flex items-center gap-1.5 text-[11px]">
+                            <Lock className="w-3.5 h-3.5" />
+                            Customization and widget dragging is managed by Host ({roomState.hostName || 'Host'}).
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
 
