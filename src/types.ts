@@ -328,6 +328,7 @@ export interface Participant {
   photoURL?: string;
   currentTask?: string;
   status: 'active' | 'idle' | 'break';
+  lastActiveAt?: string;
   isHost: boolean;
   joinedAt?: string;
 }
