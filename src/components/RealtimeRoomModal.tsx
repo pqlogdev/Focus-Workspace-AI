@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { RoomState, Task, TimerStatus, WorkspaceConfig, Participant, RoomChatMessage } from '../types';
 import {
   Users,
@@ -81,7 +82,18 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
   const wsRef = useRef<WebSocket | null>(null);
 
   // Derive participant ID & Name
-  const myParticipantId = currentUser?.uid || `user-${Date.now()}`;
+  const myParticipantId = useRef<string>(
+    currentUser?.uid || 
+    localStorage.getItem('focus_participant_id') || 
+    `user-${Date.now()}`
+  ).current;
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      localStorage.setItem('focus_participant_id', myParticipantId);
+    }
+  }, [currentUser?.uid, myParticipantId]);
+
   const myDisplayName = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Focus Focuser';
 
   // Sync scratchpad when roomState updates from server
@@ -91,58 +103,92 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
     }
   }, [roomState?.sharedScratchpad]);
 
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // Connect WebSocket when room is active
   useEffect(() => {
     if (!roomState?.code) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/api/ws`;
-    const socket = new WebSocket(wsUrl);
+    let reconnectAttempts = 0;
+    let reconnectTimeoutId: NodeJS.Timeout;
+    let socket: WebSocket | null = null;
+    let isIntentionalClose = false;
 
-    socket.onopen = () => {
-      // Join room
-      socket.send(
-        JSON.stringify({
-          type: 'JOIN_ROOM',
-          roomCode: roomState.code,
-          participant: {
-            id: myParticipantId,
-            displayName: myDisplayName,
-            photoURL: currentUser?.photoURL || undefined,
-            currentTask: userGoalInput,
-            status: 'active',
-            isHost: roomState.hostId === myParticipantId,
-          },
-        })
-      );
-    };
+    const connect = () => {
+      socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
 
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'ROOM_UPDATE' && data.room) {
-          onRoomStateChange(data.room);
+      socket.onopen = () => {
+        reconnectAttempts = 0;
+        // Join room
+        socket?.send(
+          JSON.stringify({
+            type: 'JOIN_ROOM',
+            roomCode: roomState.code,
+            participant: {
+              id: myParticipantId,
+              displayName: myDisplayName,
+              photoURL: currentUser?.photoURL || undefined,
+              currentTask: userGoalInput,
+              status: 'active',
+              isHost: roomState.hostId === myParticipantId,
+            },
+          })
+        );
+      };
 
-          // If atmosphere was synced and user is participant
-          if (data.room.syncAtmosphere && data.room.config && onApplyAtmosphere) {
-            onApplyAtmosphere(data.room.config);
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'ROOM_UPDATE' && data.room) {
+            onRoomStateChange(data.room);
+
+            // If atmosphere was synced and user is participant
+            if (data.room.syncAtmosphere && data.room.config && onApplyAtmosphere) {
+              onApplyAtmosphere(data.room.config);
+            }
+          } else if (data.type === 'EMOJI_REACTION' && onSendReaction) {
+            onSendReaction(data.emoji);
+          } else if (data.type === 'TYPING_START') {
+            setTypingUsers(prev => ({ ...prev, [data.participantId]: data.displayName }));
+          } else if (data.type === 'TYPING_STOP') {
+            setTypingUsers(prev => {
+              const newTyping = { ...prev };
+              delete newTyping[data.participantId];
+              return newTyping;
+            });
           }
-        } else if (data.type === 'EMOJI_REACTION' && onSendReaction) {
-          onSendReaction(data.emoji);
+        } catch (err) {
+          console.error('WS Parse Error:', err);
         }
-      } catch (err) {
-        console.error('WS Parse Error:', err);
-      }
+      };
+
+      socket.onclose = () => {
+        if (!isIntentionalClose) {
+          const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 15000);
+          console.warn(`WS Room Connection Disconnected. Reconnecting in ${delay}ms...`);
+          reconnectTimeoutId = setTimeout(() => {
+            reconnectAttempts++;
+            connect();
+          }, delay);
+        }
+      };
+      
+      socket.onerror = () => {
+        // Will trigger onclose
+      };
     };
 
-    socket.onerror = () => {
-      console.warn('WS Room Connection Disconnected. Falling back to HTTP sync.');
-    };
-
-    wsRef.current = socket;
+    connect();
 
     return () => {
-      if (socket.readyState === WebSocket.OPEN) {
+      isIntentionalClose = true;
+      clearTimeout(reconnectTimeoutId);
+      if (socket && socket.readyState === WebSocket.OPEN) {
         socket.close();
       }
     };
@@ -965,11 +1011,29 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
                   </div>
 
                   {/* Chat Input Bar */}
+                  {/* Typing Indicator */}
+                  {Object.keys(typingUsers).length > 0 && (
+                    <div className="px-4 py-2 text-xs text-slate-400 italic animate-pulse">
+                      {Object.values(typingUsers).join(', ')} {Object.values(typingUsers).length > 1 ? 'are' : 'is'} typing...
+                    </div>
+                  )}
+
                   <form onSubmit={handleSendChat} className="flex gap-2 pt-3 border-t border-slate-800 mt-2">
                     <input
                       type="text"
                       value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
+                      onChange={(e) => {
+                        setChatInput(e.target.value);
+                        if (!isTyping) {
+                          setIsTyping(true);
+                          sendWs({ type: 'TYPING_START', roomCode: roomState.code, participantId: myParticipantId, displayName: myDisplayName });
+                        }
+                        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                        typingTimeoutRef.current = setTimeout(() => {
+                          setIsTyping(false);
+                          sendWs({ type: 'TYPING_STOP', roomCode: roomState.code, participantId: myParticipantId });
+                        }, 2000);
+                      }}
                       placeholder="Type a message to the group..."
                       className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-indigo-500"
                     />
@@ -1019,41 +1083,53 @@ export const RealtimeRoomModal: React.FC<RealtimeRoomModalProps> = ({
                     </h4>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {roomState.participants?.map((p) => (
-                        <div
-                          key={p.id}
-                          className="p-3 bg-slate-950/60 border border-slate-800 rounded-2xl flex items-center gap-3"
-                        >
-                          {p.photoURL ? (
-                            <img
-                              src={p.photoURL}
-                              alt={p.displayName}
-                              className="w-10 h-10 rounded-xl object-cover ring-1 ring-slate-700"
-                              referrerPolicy="no-referrer"
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-sm flex items-center justify-center">
-                              {p.displayName.charAt(0)}
-                            </div>
-                          )}
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-xs text-white truncate">{p.displayName}</span>
-                              {p.isHost && (
-                                <span className="text-[9px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.2 rounded font-semibold">
-                                  Host
-                                </span>
+                      <AnimatePresence>
+                        {roomState.participants?.map((p) => {
+                          let dotColor = 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]';
+                          if (p.status === 'idle') dotColor = 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]';
+                          if (p.status === 'break') dotColor = 'bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.8)]';
+                          
+                          return (
+                            <motion.div
+                              key={p.id}
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.9 }}
+                              transition={{ duration: 0.2 }}
+                              className="p-3 bg-slate-950/60 border border-slate-800 rounded-2xl flex items-center gap-3"
+                            >
+                              {p.photoURL ? (
+                                <img
+                                  src={p.photoURL}
+                                  alt={p.displayName}
+                                  className="w-10 h-10 rounded-xl object-cover ring-1 ring-slate-700"
+                                  referrerPolicy="no-referrer"
+                                />
+                              ) : (
+                                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-sm flex items-center justify-center">
+                                  {p.displayName.charAt(0)}
+                                </div>
                               )}
-                            </div>
-                            <p className="text-[11px] text-indigo-300/90 truncate font-medium mt-0.5">
-                              {p.currentTask || 'Focusing quietly'}
-                            </p>
-                          </div>
 
-                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-                        </div>
-                      ))}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-xs text-white truncate">{p.displayName}</span>
+                                  {p.isHost && (
+                                    <span className="text-[9px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.2 rounded font-semibold">
+                                      Host
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-indigo-300/90 truncate font-medium mt-0.5">
+                                  {p.currentTask || 'Focusing quietly'}
+                                </p>
+                              </div>
+
+                              <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} title={`Status: ${p.status}`} />
+                            </motion.div>
+                          );
+                        })}
+                      </AnimatePresence>
                     </div>
                   </div>
 

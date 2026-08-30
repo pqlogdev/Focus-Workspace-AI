@@ -10,7 +10,7 @@ import { createServer as createViteServer } from 'vite';
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = 3001;
 const server = createServer(app);
 
 // Increase JSON and urlencoded limits for base64 media uploads
@@ -642,41 +642,143 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 const roomSockets = new Map<string, Set<WebSocket>>();
+const socketMeta = new WeakMap<WebSocket, { roomCode: string; participantId: string }>();
+const gracePeriodTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const socketAlive = new WeakMap<WebSocket, boolean>();
+
+// 25s ping/pong heartbeat to catch half-open connections
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (socketAlive.get(ws) === false) {
+      return ws.terminate();
+    }
+    socketAlive.set(ws, false);
+    ws.ping();
+  });
+}, 25000);
+
+// 60s interval to check for idle participants and sync break state
+setInterval(() => {
+  const now = Date.now();
+  roomsStore.forEach((room, roomCode) => {
+    let changed = false;
+    const isBreak = room.timerState?.status === 'BREAK' || room.timerState?.status === 'LONG_BREAK';
+
+    room.participants.forEach((p: any) => {
+      const activeTime = p.lastActiveAt ? new Date(p.lastActiveAt).getTime() : now;
+      const isIdle = now - activeTime > 3 * 60 * 1000; // 3 minutes
+
+      let targetStatus = p.status;
+      if (isBreak) {
+        targetStatus = 'break';
+      } else if (isIdle) {
+        targetStatus = 'idle';
+      } else {
+        targetStatus = 'active';
+      }
+
+      if (p.status !== targetStatus) {
+        p.status = targetStatus;
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      broadcastRoomUpdate(roomCode);
+    }
+  });
+}, 60000);
+
+function removeParticipant(roomCode: string, participantId: string) {
+  const room = roomsStore.get(roomCode);
+  if (!room) return;
+  const leavingUser = room.participants.find((p: any) => p.id === participantId);
+  room.participants = room.participants.filter((p: any) => p.id !== participantId);
+  
+  if (leavingUser) {
+    if (!room.chatMessages) room.chatMessages = [];
+    room.chatMessages.push({
+      id: `msg-leave-${Date.now()}`,
+      senderId: 'system',
+      senderName: 'Focus Room Bot',
+      text: `${leavingUser.displayName} left the room.`,
+      timestamp: new Date().toISOString(),
+      isSystem: true,
+    });
+  }
+  
+  if (room.participants.length === 0) {
+    roomsStore.delete(roomCode);
+  } else {
+    broadcastRoomUpdate(roomCode);
+  }
+}
 
 wss.on('connection', (ws: WebSocket) => {
-  let currentRoomCode: string | null = null;
-  let currentParticipantId: string | null = null;
+  socketAlive.set(ws, true);
+
+  ws.on('pong', () => {
+    socketAlive.set(ws, true);
+  });
 
   ws.on('message', (message: string) => {
     try {
       const data = JSON.parse(message.toString());
+      const roomCode = data.roomCode?.toUpperCase() || socketMeta.get(ws)?.roomCode;
+      if (!roomCode) return;
+
+      // Update lastActiveAt on any message from a participant
+      const pId = data.participant?.id || data.participantId || socketMeta.get(ws)?.participantId;
+      if (pId) {
+        const room = roomsStore.get(roomCode);
+        if (room) {
+          const p = room.participants.find((p: any) => p.id === pId);
+          if (p) {
+            p.lastActiveAt = new Date().toISOString();
+            if (p.status === 'idle') {
+              p.status = 'active';
+              broadcastRoomUpdate(roomCode);
+            }
+          }
+        }
+      }
 
       if (data.type === 'JOIN_ROOM') {
-        currentRoomCode = data.roomCode.toUpperCase();
-        currentParticipantId = data.participant?.id || null;
+        const participantId = data.participant?.id;
+        if (!participantId) return;
 
-        if (!roomSockets.has(currentRoomCode)) {
-          roomSockets.set(currentRoomCode, new Set());
+        socketMeta.set(ws, { roomCode, participantId });
+
+        if (!roomSockets.has(roomCode)) {
+          roomSockets.set(roomCode, new Set());
         }
-        roomSockets.get(currentRoomCode)?.add(ws);
+        roomSockets.get(roomCode)?.add(ws);
 
-        let room = roomsStore.get(currentRoomCode);
+        // Cancel grace period if reconnecting
+        const timerKey = `${roomCode}:${participantId}`;
+        if (gracePeriodTimers.has(timerKey)) {
+          clearTimeout(gracePeriodTimers.get(timerKey));
+          gracePeriodTimers.delete(timerKey);
+        }
+
+        let room = roomsStore.get(roomCode);
         if (room && data.participant) {
-          const existingIndex = room.participants.findIndex((p: any) => p.id === data.participant.id);
+          const existingIndex = room.participants.findIndex((p: any) => p.id === participantId);
           if (existingIndex >= 0) {
             room.participants[existingIndex] = {
               ...room.participants[existingIndex],
               ...data.participant,
               status: 'active',
+              lastActiveAt: new Date().toISOString(),
             };
           } else {
             room.participants.push({
               ...data.participant,
               status: 'active',
               joinedAt: new Date().toISOString(),
+              lastActiveAt: new Date().toISOString(),
             });
 
-            // Add system join message
             if (!room.chatMessages) room.chatMessages = [];
             room.chatMessages.push({
               id: `msg-join-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
@@ -688,49 +790,51 @@ wss.on('connection', (ws: WebSocket) => {
             });
           }
         }
+        broadcastRoomUpdate(roomCode);
 
-        // Broadcast room update
-        broadcastRoomUpdate(currentRoomCode);
-      } else if (data.type === 'LEAVE_ROOM' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
-        if (room && data.participantId) {
-          const leavingUser = room.participants.find((p: any) => p.id === data.participantId);
-          room.participants = room.participants.filter((p: any) => p.id !== data.participantId);
-          if (leavingUser) {
-            if (!room.chatMessages) room.chatMessages = [];
-            room.chatMessages.push({
-              id: `msg-leave-${Date.now()}`,
-              senderId: 'system',
-              senderName: 'Focus Room Bot',
-              text: `${leavingUser.displayName} left the room.`,
-              timestamp: new Date().toISOString(),
-              isSystem: true,
-            });
-          }
+      } else if (data.type === 'LEAVE_ROOM') {
+        const meta = socketMeta.get(ws);
+        if (meta) {
+          removeParticipant(meta.roomCode, meta.participantId);
+          socketMeta.delete(ws);
         }
-        broadcastRoomUpdate(currentRoomCode);
-      } else if (data.type === 'UPDATE_TIMER' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'TYPING_START' || data.type === 'TYPING_STOP') {
+        broadcastToRoom(roomCode, data, ws);
+      } else if (data.type === 'UPDATE_TIMER') {
+        let room = roomsStore.get(roomCode);
         if (room) {
+          const oldStatus = room.timerState?.status;
+          const newStatus = data.timerState?.status;
+          
           room.timerState = {
             ...room.timerState,
             ...data.timerState,
             lastUpdated: Date.now(),
           };
-          broadcastRoomUpdate(currentRoomCode);
+
+          // Break sync
+          if (oldStatus !== newStatus && (newStatus === 'BREAK' || newStatus === 'LONG_BREAK' || newStatus === 'FOCUS')) {
+            const isBreak = newStatus === 'BREAK' || newStatus === 'LONG_BREAK';
+            room.participants.forEach((p: any) => {
+               p.status = isBreak ? 'break' : 'active';
+               if (!isBreak) p.lastActiveAt = new Date().toISOString();
+            });
+          }
+
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'EMOJI_REACTION' && currentRoomCode) {
-        broadcastToRoom(currentRoomCode, {
+      } else if (data.type === 'EMOJI_REACTION') {
+        broadcastToRoom(roomCode, {
           type: 'EMOJI_REACTION',
           emoji: data.emoji,
           senderName: data.senderName,
           senderId: data.senderId,
         });
-      } else if (data.type === 'SEND_CHAT' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'SEND_CHAT') {
+        let room = roomsStore.get(roomCode);
         if (room && data.message) {
           if (!room.chatMessages) room.chatMessages = [];
-          const newMsg = {
+          room.chatMessages.push({
             id: data.message.id || `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
             senderId: data.message.senderId || 'anon',
             senderName: data.message.senderName || 'Member',
@@ -738,22 +842,18 @@ wss.on('connection', (ws: WebSocket) => {
             text: data.message.text || '',
             timestamp: data.message.timestamp || new Date().toISOString(),
             isSystem: false,
-          };
-          room.chatMessages.push(newMsg);
-          // Keep last 100 messages
-          if (room.chatMessages.length > 100) {
-            room.chatMessages = room.chatMessages.slice(-100);
-          }
-          broadcastRoomUpdate(currentRoomCode);
+          });
+          if (room.chatMessages.length > 100) room.chatMessages = room.chatMessages.slice(-100);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'UPDATE_TASKS' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'UPDATE_TASKS') {
+        let room = roomsStore.get(roomCode);
         if (room) {
           room.sharedTasks = data.tasks;
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'TOGGLE_TASK' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'TOGGLE_TASK') {
+        let room = roomsStore.get(roomCode);
         if (room && data.taskId) {
           const task = (room.sharedTasks || []).find((t: any) => t.id === data.taskId);
           if (task) {
@@ -770,23 +870,23 @@ wss.on('connection', (ws: WebSocket) => {
               });
             }
           }
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'ADD_TASK' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'ADD_TASK') {
+        let room = roomsStore.get(roomCode);
         if (room && data.task) {
           if (!room.sharedTasks) room.sharedTasks = [];
           room.sharedTasks.push(data.task);
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'UPDATE_SCRATCHPAD' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'UPDATE_SCRATCHPAD') {
+        let room = roomsStore.get(roomCode);
         if (room) {
           room.sharedScratchpad = data.scratchpad;
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'UPDATE_PARTICIPANT' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'UPDATE_PARTICIPANT') {
+        let room = roomsStore.get(roomCode);
         if (room && data.participantId) {
           const participant = (room.participants || []).find((p: any) => p.id === data.participantId);
           if (participant) {
@@ -794,10 +894,10 @@ wss.on('connection', (ws: WebSocket) => {
             if (data.status !== undefined) participant.status = data.status;
             if (data.displayName !== undefined) participant.displayName = data.displayName;
           }
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'SYNC_ATMOSPHERE' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'SYNC_ATMOSPHERE') {
+        let room = roomsStore.get(roomCode);
         if (room && data.config) {
           room.config = data.config;
           room.syncAtmosphere = true;
@@ -810,10 +910,10 @@ wss.on('connection', (ws: WebSocket) => {
             timestamp: new Date().toISOString(),
             isSystem: true,
           });
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
-      } else if (data.type === 'VOTE_SKIP' && currentRoomCode) {
-        let room = roomsStore.get(currentRoomCode);
+      } else if (data.type === 'VOTE_SKIP') {
+        let room = roomsStore.get(roomCode);
         if (room) {
           if (!room.votesToSkipBreak) room.votesToSkipBreak = [];
           if (!room.votesToSkipBreak.includes(data.participantId)) {
@@ -823,6 +923,12 @@ wss.on('connection', (ws: WebSocket) => {
             room.timerState.status = 'FOCUS';
             room.timerState.remainingSeconds = 1500;
             room.votesToSkipBreak = [];
+            
+            room.participants.forEach((p: any) => {
+              p.status = 'active';
+              p.lastActiveAt = new Date().toISOString();
+            });
+
             if (!room.chatMessages) room.chatMessages = [];
             room.chatMessages.push({
               id: `msg-vote-${Date.now()}`,
@@ -833,7 +939,7 @@ wss.on('connection', (ws: WebSocket) => {
               isSystem: true,
             });
           }
-          broadcastRoomUpdate(currentRoomCode);
+          broadcastRoomUpdate(roomCode);
         }
       }
     } catch (err) {
@@ -842,8 +948,18 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', () => {
-    if (currentRoomCode && roomSockets.has(currentRoomCode)) {
-      roomSockets.get(currentRoomCode)?.delete(ws);
+    const meta = socketMeta.get(ws);
+    if (meta) {
+      const { roomCode, participantId } = meta;
+      roomSockets.get(roomCode)?.delete(ws);
+      
+      const timerKey = `${roomCode}:${participantId}`;
+      const timer = setTimeout(() => {
+        removeParticipant(roomCode, participantId);
+        gracePeriodTimers.delete(timerKey);
+      }, 12000); // 12s grace period
+      
+      gracePeriodTimers.set(timerKey, timer);
     }
   });
 });
@@ -854,12 +970,12 @@ function broadcastRoomUpdate(code: string) {
   broadcastToRoom(code, { type: 'ROOM_UPDATE', room });
 }
 
-function broadcastToRoom(code: string, payload: any) {
+function broadcastToRoom(code: string, payload: any, excludeWs?: WebSocket) {
   const sockets = roomSockets.get(code);
   if (!sockets) return;
   const msg = JSON.stringify(payload);
   sockets.forEach((s) => {
-    if (s.readyState === WebSocket.OPEN) {
+    if (s !== excludeWs && s.readyState === WebSocket.OPEN) {
       s.send(msg);
     }
   });

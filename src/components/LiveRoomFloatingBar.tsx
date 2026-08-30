@@ -27,6 +27,20 @@ export const LiveRoomFloatingBar: React.FC<LiveRoomFloatingBarProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const myParticipant = roomState.participants?.find((p: any) => p.id === localStorage.getItem('focus_participant_id') || p.displayName === 'Focus Focuser');
+  const myStatus = myParticipant?.status || 'active';
+
+  let dotColor = 'bg-emerald-500';
+  let pingColor = 'bg-emerald-400';
+  
+  if (myStatus === 'idle') {
+    dotColor = 'bg-amber-500';
+    pingColor = 'bg-amber-400';
+  } else if (myStatus === 'break') {
+    dotColor = 'bg-blue-500';
+    pingColor = 'bg-blue-400';
+  }
+
   return (
     <div className="fixed top-5 left-6 z-40 flex items-center gap-2 pointer-events-auto select-none animate-in fade-in slide-in-from-top-4 duration-300">
       
@@ -35,9 +49,9 @@ export const LiveRoomFloatingBar: React.FC<LiveRoomFloatingBarProps> = ({
         
         {/* Live Pulse Indicator */}
         <div className="flex items-center gap-2">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+          <span className="relative flex h-2.5 w-2.5" title={`Status: ${myStatus}`}>
+            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${pingColor} opacity-75`} />
+            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`} />
           </span>
           <span className="font-mono font-bold text-xs text-indigo-300 tracking-wider">
             {roomState.code}
