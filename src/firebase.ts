@@ -228,62 +228,65 @@ export async function saveUserDataToCloud(
     rollbackSnapshot?: RollbackSnapshot | null;
   }
 ): Promise<void> {
+  if (!userId || userId === 'guest' || userId === 'anonymous') return;
+
   try {
     const batch = writeBatch(db);
+    const nowIso = new Date().toISOString();
 
     if (data.config) {
       const configRef = doc(db, 'users', userId, 'workspace', 'config');
-      batch.set(configRef, { ...data.config, updatedAt: new Date().toISOString() });
+      batch.set(configRef, sanitizeForFirestore({ ...data.config, updatedAt: nowIso }), { merge: true });
     }
 
     if (data.notepad !== undefined) {
       const notepadRef = doc(db, 'users', userId, 'notepad', 'current');
-      batch.set(notepadRef, { content: data.notepad, updatedAt: new Date().toISOString() });
+      batch.set(notepadRef, { content: data.notepad, updatedAt: nowIso }, { merge: true });
     }
 
     if (data.streak) {
       const streakRef = doc(db, 'users', userId, 'streak', 'current');
-      batch.set(streakRef, { ...data.streak, updatedAt: new Date().toISOString() });
+      batch.set(streakRef, sanitizeForFirestore({ ...data.streak, updatedAt: nowIso }), { merge: true });
     }
 
-    await batch.commit();
-
-    // Save tasks and sticky notes
     if (data.tasks) {
       const tasksRef = doc(db, 'users', userId, 'tasks', 'all');
-      await setDoc(tasksRef, { items: data.tasks, updatedAt: new Date().toISOString() });
+      batch.set(tasksRef, { items: sanitizeForFirestore(data.tasks), updatedAt: nowIso }, { merge: true });
     }
 
     if (data.stickyNotes) {
       const notesRef = doc(db, 'users', userId, 'stickyNotes', 'all');
-      await setDoc(notesRef, { items: data.stickyNotes, updatedAt: new Date().toISOString() });
+      batch.set(notesRef, { items: sanitizeForFirestore(data.stickyNotes), updatedAt: nowIso }, { merge: true });
     }
 
     if (data.logs) {
       const logsRef = doc(db, 'users', userId, 'focusLogs', 'all');
-      await setDoc(logsRef, { items: data.logs.slice(0, 100), updatedAt: new Date().toISOString() });
+      batch.set(logsRef, { items: sanitizeForFirestore(data.logs.slice(0, 100)), updatedAt: nowIso }, { merge: true });
     }
 
     if (data.customImages) {
       const imagesRef = doc(db, 'users', userId, 'imageLibrary', 'all');
-      await setDoc(imagesRef, { items: data.customImages, updatedAt: new Date().toISOString() });
+      batch.set(imagesRef, { items: sanitizeForFirestore(data.customImages), updatedAt: nowIso }, { merge: true });
     }
 
     if (data.customAudio) {
       const audioRef = doc(db, 'users', userId, 'audioLibrary', 'all');
-      await setDoc(audioRef, { items: data.customAudio, updatedAt: new Date().toISOString() });
+      batch.set(audioRef, { items: sanitizeForFirestore(data.customAudio), updatedAt: nowIso }, { merge: true });
     }
 
     if (data.rollbackSnapshot !== undefined) {
       const snapRef = doc(db, 'users', userId, 'rollbackSnapshot', 'latest');
       if (data.rollbackSnapshot) {
-        await setDoc(snapRef, { ...data.rollbackSnapshot, updatedAt: new Date().toISOString() });
+        batch.set(snapRef, sanitizeForFirestore({ ...data.rollbackSnapshot, updatedAt: nowIso }), { merge: true });
       } else {
-        await deleteDoc(snapRef).catch(() => {});
+        batch.delete(snapRef);
       }
     }
+
+    await batch.commit();
   } catch (error) {
-    console.warn('Failed to batch save user data to cloud:', error);
+    console.warn('Batched cloud save warning:', error);
+    handleFirestoreError(error, OperationType.WRITE, `users/${userId}`);
   }
 }
 
@@ -677,6 +680,136 @@ export async function deletePersonalTemplate(userId: string, templateId: string)
     }
   } catch (error) {
     console.error('Error deleting template:', error);
+    throw error;
+  }
+}
+
+// ----------------------------------------------------
+// ROOM-SCOPED TEMPLATES (Firestore: rooms/{roomId}/templates/{templateId})
+// ----------------------------------------------------
+
+/**
+ * Save or update a room-scoped template
+ */
+export async function saveRoomTemplate(roomId: string, template: Template): Promise<Template> {
+  try {
+    const creatorId = template.creatorId || auth.currentUser?.uid || 'guest';
+    const creatorName = template.creatorName || auth.currentUser?.displayName || 'Room Member';
+
+    const cleanTemplate: Template = {
+      ...template,
+      roomId,
+      contextType: 'room',
+      creatorId,
+      creatorName,
+      creatorPhoto: template.creatorPhoto || auth.currentUser?.photoURL || '',
+      tasks: template.tasks || [],
+      stickyNotes: template.stickyNotes || [],
+      notepad: template.notepad || '',
+      updatedAt: new Date().toISOString(),
+      createdAt: template.createdAt || new Date().toISOString(),
+    };
+
+    // 1. Cache to localStorage for this room
+    try {
+      const cacheKey = `airiser_room_templates_${roomId}`;
+      const raw = localStorage.getItem(cacheKey);
+      const existing: Template[] = raw ? JSON.parse(raw) : [];
+      const updated = [cleanTemplate, ...existing.filter((t) => t.id !== cleanTemplate.id)];
+      localStorage.setItem(cacheKey, JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Local storage room template cache error:', e);
+    }
+
+    // 2. Persist to Firestore under rooms/{roomId}/templates/{templateId}
+    if (auth.currentUser) {
+      try {
+        const firestorePayload = sanitizeForFirestore(cleanTemplate);
+        const roomTemplateRef = doc(db, 'rooms', roomId, 'templates', template.id);
+        await setDoc(roomTemplateRef, firestorePayload, { merge: true });
+      } catch (cloudErr) {
+        console.warn('Firestore room template write warning (local fallback used):', cloudErr);
+        handleFirestoreError(cloudErr, OperationType.WRITE, `rooms/${roomId}/templates/${template.id}`);
+      }
+    }
+
+    return cleanTemplate;
+  } catch (error) {
+    console.error('Error saving room template:', error);
+    throw error;
+  }
+}
+
+/**
+ * Load all room-scoped templates for an active room
+ */
+export async function loadRoomTemplates(roomId: string): Promise<Template[]> {
+  const templatesMap = new Map<string, Template>();
+
+  // 1. First load from localStorage cache
+  try {
+    const cacheKey = `airiser_room_templates_${roomId}`;
+    const raw = localStorage.getItem(cacheKey);
+    if (raw) {
+      const localList: Template[] = JSON.parse(raw);
+      localList.forEach((t) => {
+        if (t && t.id) {
+          templatesMap.set(t.id, { ...t, contextType: 'room', roomId });
+        }
+      });
+    }
+  } catch (e) {
+    console.warn('Local room templates parse error:', e);
+  }
+
+  // 2. Fetch from Firestore subcollection rooms/{roomId}/templates
+  if (auth.currentUser) {
+    try {
+      const roomTemplatesCol = collection(db, 'rooms', roomId, 'templates');
+      const snap = await getDocs(roomTemplatesCol);
+      snap.forEach((d) => {
+        const data = d.data() as Template;
+        templatesMap.set(data.id, {
+          ...data,
+          id: d.id,
+          contextType: 'room',
+          roomId,
+        });
+      });
+    } catch (e) {
+      console.warn('Could not fetch room templates from Firestore:', e);
+    }
+  }
+
+  const templates = Array.from(templatesMap.values());
+  return templates.sort(
+    (a, b) => new Date(b.updatedAt || b.createdAt || '').getTime() - new Date(a.updatedAt || a.createdAt || '').getTime()
+  );
+}
+
+/**
+ * Delete a room template
+ */
+export async function deleteRoomTemplate(roomId: string, templateId: string): Promise<void> {
+  try {
+    // 1. Remove from local storage
+    try {
+      const cacheKey = `airiser_room_templates_${roomId}`;
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        const localList: Template[] = JSON.parse(raw);
+        const filtered = localList.filter((t) => t.id !== templateId);
+        localStorage.setItem(cacheKey, JSON.stringify(filtered));
+      }
+    } catch (e) {}
+
+    // 2. Remove from Firestore
+    if (auth.currentUser) {
+      const roomTemplateRef = doc(db, 'rooms', roomId, 'templates', templateId);
+      await deleteDoc(roomTemplateRef).catch(() => {});
+    }
+  } catch (error) {
+    console.error('Error deleting room template:', error);
     throw error;
   }
 }

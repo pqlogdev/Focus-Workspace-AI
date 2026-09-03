@@ -282,6 +282,10 @@ export interface Template {
   notepad?: string;
   isPublic: boolean;
 
+  // Context-aware ownership (Personal vs Room Template)
+  roomId?: string;
+  contextType?: 'personal' | 'room';
+
   // Group flag (0 = individual/personal, 1 = group/team) and Member user list (max 5 members)
   isGroup?: 0 | 1;
   members?: TemplateMember[]; // Max 5 members stored directly in the template data

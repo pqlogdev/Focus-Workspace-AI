@@ -27,8 +27,9 @@ import {
   Move,
   RotateCcw,
   Search,
+  User as UserIcon,
 } from 'lucide-react';
-import { ViewMode } from '../types';
+import { ViewMode, Template } from '../types';
 
 interface FloatingWorkspaceBadgeProps {
   user: User | null;
@@ -38,6 +39,8 @@ interface FloatingWorkspaceBadgeProps {
   currentStreak: number;
   viewMode: ViewMode;
   pendingTasksCount: number;
+  activeTemplate?: Template | null;
+  activeRoomCode?: string | null;
   searchBarElement?: React.ReactNode;
   onOpenSearch?: () => void;
   onSignIn: () => Promise<void>;
@@ -65,6 +68,8 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
   currentStreak,
   viewMode,
   pendingTasksCount,
+  activeTemplate,
+  activeRoomCode,
   searchBarElement,
   onOpenSearch,
   onSignIn,
@@ -393,6 +398,37 @@ export const FloatingWorkspaceBadge: React.FC<FloatingWorkspaceBadgeProps> = ({
 
           {/* Global Workspace Search Bar */}
           {searchBarElement}
+
+          {/* Active Template UI/UX Visualizer Badge */}
+          <button
+            onClick={onToggleTemplates}
+            className="p-1 px-2.5 rounded-2xl bg-slate-950/80 hover:bg-slate-900 border border-slate-800/90 text-slate-200 backdrop-blur-xl transition shadow-2xl flex items-center gap-2 active:scale-95 group shrink-0"
+            title="Active Template - Click to Switch or Manage"
+          >
+            <div
+              className={`p-1 rounded-xl border ${
+                activeRoomCode || activeTemplate?.roomId || activeTemplate?.contextType === 'room'
+                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                  : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30'
+              }`}
+            >
+              {activeRoomCode || activeTemplate?.roomId || activeTemplate?.contextType === 'room' ? (
+                <Users className="w-3.5 h-3.5" />
+              ) : (
+                <UserIcon className="w-3.5 h-3.5" />
+              )}
+            </div>
+            <div className="text-left hidden sm:block">
+              <div className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider leading-none">
+                {activeRoomCode || activeTemplate?.roomId || activeTemplate?.contextType === 'room'
+                  ? 'Room Template'
+                  : 'Personal Template'}
+              </div>
+              <div className="text-xs font-bold text-slate-100 max-w-[110px] md:max-w-[140px] truncate leading-tight mt-0.5">
+                {activeTemplate ? activeTemplate.name : 'Default Flow'}
+              </div>
+            </div>
+          </button>
 
           {/* Interactive User Avatar & System Command Orb */}
           <button

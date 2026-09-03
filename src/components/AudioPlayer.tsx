@@ -345,9 +345,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     if (isPlayingMusic && currentTrack && currentTrack.source !== 'youtube') {
       audioRef.current.src = currentTrack.url;
       audioRef.current.volume = musicVolume;
-      audioRef.current
-        .play()
-        .catch((e) => console.log('Audio autoplay prevented or error:', e));
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          // Catch autoplay policy restrictions or NotSupportedError cleanly
+          console.info('Audio playback prevented or paused by browser policy:', err?.name || err);
+          if (err?.name === 'NotAllowedError') {
+            setIsPlayingMusic(false);
+          }
+        });
+      }
     } else {
       audioRef.current.pause();
     }

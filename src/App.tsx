@@ -11,6 +11,7 @@ import {
   saveRollbackSnapshotToCloud,
   clearRollbackSnapshotFromCloud,
   savePersonalTemplate,
+  saveRoomTemplate,
 } from './firebase';
 import {
   WorkspaceConfig,
@@ -54,7 +55,7 @@ import { CustomizerDrawer } from './components/CustomizerDrawer';
 import { FloatingWorkspaceBadge } from './components/FloatingWorkspaceBadge';
 import { GlobalSearchBar } from './components/GlobalSearchBar';
 import { LandingPage } from './components/LandingPage';
-import { Sparkles as SparklesIcon, Undo2, RotateCcw, X as CloseIcon, ShieldCheck, Flame, Layout as LayoutIcon, RefreshCw as RefreshCwIcon } from 'lucide-react';
+import { Sparkles as SparklesIcon, Undo2, RotateCcw, X as CloseIcon, ShieldCheck, Flame, Layout as LayoutIcon, RefreshCw as RefreshCwIcon, Plus as PlusIcon } from 'lucide-react';
 
 export function App() {
   // 1. Core Workspace Config State (Persisted across refreshes & hard refreshes)
@@ -292,12 +293,36 @@ export function App() {
   const [activeTemplate, setActiveTemplate] = useState<Template | null>(() =>
     safeLocalStorageJSONGet<Template | null>('airiser_active_template', null)
   );
+  // Default isTemplateAutoSync to false on app initialization
   const [isTemplateAutoSync, setIsTemplateAutoSync] = useState<boolean>(() =>
-    safeLocalStorageJSONGet<boolean>('airiser_template_auto_sync', true)
+    safeLocalStorageJSONGet<boolean>('airiser_template_auto_sync', false)
   );
   const [isTemplateSyncing, setIsTemplateSyncing] = useState<boolean>(false);
   const [lastTemplateSyncedAt, setLastTemplateSyncedAt] = useState<Date | null>(null);
   const templateSyncTimeoutRef = useRef<any>(null);
+
+  // Latest cloud state ref to throttle and prevent write stream rate limiting
+  const latestCloudStateRef = useRef({
+    config,
+    tasks,
+    stickyNotes,
+    notepadContent,
+    logs,
+    streak,
+    customImages,
+  });
+
+  useEffect(() => {
+    latestCloudStateRef.current = {
+      config,
+      tasks,
+      stickyNotes,
+      notepadContent,
+      logs,
+      streak,
+      customImages,
+    };
+  }, [config, tasks, stickyNotes, notepadContent, logs, streak, customImages]);
 
   // Listen to Auth State Changes
   useEffect(() => {
@@ -375,7 +400,7 @@ export function App() {
     });
   }, []);
 
-  // Debounced auto-save to Cloud when state changes and user is signed in
+  // Debounced auto-save to Cloud (1200ms–1500ms debounce delay)
   const triggerCloudSync = useCallback(() => {
     if (!user || !hasHydratedFromCloud.current) return;
 
@@ -386,14 +411,15 @@ export function App() {
     syncTimeoutRef.current = setTimeout(async () => {
       setIsSyncing(true);
       try {
+        const stateToSave = latestCloudStateRef.current;
         await saveUserDataToCloud(user.uid, {
-          config,
-          tasks,
-          stickyNotes,
-          notepad: notepadContent,
-          logs,
-          streak,
-          customImages,
+          config: stateToSave.config,
+          tasks: stateToSave.tasks,
+          stickyNotes: stateToSave.stickyNotes,
+          notepad: stateToSave.notepadContent,
+          logs: stateToSave.logs,
+          streak: stateToSave.streak,
+          customImages: stateToSave.customImages,
         });
         setLastSyncedAt(new Date());
       } catch (error) {
@@ -401,8 +427,8 @@ export function App() {
       } finally {
         setIsSyncing(false);
       }
-    }, 1200);
-  }, [user, config, tasks, stickyNotes, notepadContent, logs, streak, customImages]);
+    }, 1400);
+  }, [user]);
 
   // Debounced auto-sync to the Active Template whenever workspace changes
   const triggerTemplateAutoSync = useCallback(() => {
@@ -421,10 +447,20 @@ export function App() {
           tasks: activeTemplate.tasks !== undefined ? tasks : activeTemplate.tasks,
           stickyNotes: activeTemplate.stickyNotes !== undefined ? stickyNotes : activeTemplate.stickyNotes,
           notepad: activeTemplate.notepad !== undefined ? notepadContent : activeTemplate.notepad,
-          thumbnail: config.background.workItems?.[0]?.thumbnailUrl || config.background.workItems?.[0]?.url || activeTemplate.thumbnail,
+          thumbnail:
+            config.background.workItems?.[0]?.thumbnailUrl ||
+            config.background.workItems?.[0]?.url ||
+            activeTemplate.thumbnail,
           updatedAt: new Date().toISOString(),
         };
-        const saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+
+        let saved: Template;
+        if (activeTemplate.roomId || activeTemplate.contextType === 'room') {
+          saved = await saveRoomTemplate(activeTemplate.roomId || roomState?.code || '', updatedTmpl);
+        } else {
+          saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+        }
+
         setActiveTemplate(saved);
         safeLocalStorageSet('airiser_active_template', JSON.stringify(saved));
         setLastTemplateSyncedAt(new Date());
@@ -433,8 +469,8 @@ export function App() {
       } finally {
         setIsTemplateSyncing(false);
       }
-    }, 1200);
-  }, [activeTemplate, isTemplateAutoSync, user, config, tasks, stickyNotes, notepadContent]);
+    }, 1400);
+  }, [activeTemplate, isTemplateAutoSync, user, config, tasks, stickyNotes, notepadContent, roomState?.code]);
 
   // Trigger template auto-sync on state changes
   useEffect(() => {
@@ -553,14 +589,16 @@ export function App() {
   };
 
   // Active Template linkage and sync controls
-  const handleSetActiveTemplate = (tmpl: Template | null, enableAutoSync: boolean = true) => {
+  const handleSetActiveTemplate = (tmpl: Template | null, enableAutoSync: boolean = false) => {
     setActiveTemplate(tmpl);
     setIsTemplateAutoSync(enableAutoSync);
     if (tmpl) {
       safeLocalStorageSet('airiser_active_template', JSON.stringify(tmpl));
       safeLocalStorageSet('airiser_template_auto_sync', JSON.stringify(enableAutoSync));
       setRollbackToast({
-        message: `⚡ Active template "${tmpl.name}" linked! All workspace updates will auto-sync to this template.`,
+        message: enableAutoSync
+          ? `⚡ Active template "${tmpl.name}" linked with auto-sync!`
+          : `✨ Template "${tmpl.name}" loaded!`,
         timestamp: Date.now(),
       });
     } else {
@@ -584,7 +622,7 @@ export function App() {
     setActiveTemplate(null);
     safeLocalStorageSet('airiser_active_template', '');
     setRollbackToast({
-      message: 'Detached active template. Future changes will only save to your personal workspace account.',
+      message: 'Detached active template. Future changes will save only to your personal workspace account.',
       timestamp: Date.now(),
     });
   };
@@ -599,10 +637,20 @@ export function App() {
         tasks: activeTemplate.tasks !== undefined ? tasks : activeTemplate.tasks,
         stickyNotes: activeTemplate.stickyNotes !== undefined ? stickyNotes : activeTemplate.stickyNotes,
         notepad: activeTemplate.notepad !== undefined ? notepadContent : activeTemplate.notepad,
-        thumbnail: config.background.workItems?.[0]?.thumbnailUrl || config.background.workItems?.[0]?.url || activeTemplate.thumbnail,
+        thumbnail:
+          config.background.workItems?.[0]?.thumbnailUrl ||
+          config.background.workItems?.[0]?.url ||
+          activeTemplate.thumbnail,
         updatedAt: new Date().toISOString(),
       };
-      const saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+
+      let saved: Template;
+      if (activeTemplate.roomId || activeTemplate.contextType === 'room') {
+        saved = await saveRoomTemplate(activeTemplate.roomId || roomState?.code || '', updatedTmpl);
+      } else {
+        saved = await savePersonalTemplate(user?.uid || 'guest', updatedTmpl);
+      }
+
       setActiveTemplate(saved);
       safeLocalStorageSet('airiser_active_template', JSON.stringify(saved));
       setLastTemplateSyncedAt(new Date());
@@ -616,6 +664,105 @@ export function App() {
       setIsTemplateSyncing(false);
     }
   };
+
+  // Add a new sticky note
+  const handleAddStickyNote = useCallback(() => {
+    const newNote: StickyNote = {
+      id: `note-${Date.now()}`,
+      text: 'New focus note...',
+      color: 'Yellow',
+      x: Math.max(20, Math.min(window.innerWidth - 300, 80 + (stickyNotes.length % 6) * 35)),
+      y: Math.max(80, Math.min(window.innerHeight - 280, 100 + (stickyNotes.length % 6) * 35)),
+      width: 280,
+      height: 230,
+      isPinned: false,
+    };
+    setStickyNotes((prev) => [...prev, newNote]);
+  }, [stickyNotes.length]);
+
+  // Room entry and leave handlers with automatic personal template restoration and sync flag reset
+  const handleRoomStateChange = useCallback(
+    (newRoomState: RoomState | null) => {
+      if (newRoomState && !roomState) {
+        // User joined/created a room: Snapshot personal workspace and active template
+        safeLocalStorageSet(
+          'airiser_personal_workspace_snapshot',
+          JSON.stringify({
+            config,
+            tasks,
+            stickyNotes,
+            notepad: notepadContent,
+          })
+        );
+        if (activeTemplate) {
+          safeLocalStorageSet('airiser_personal_active_template', JSON.stringify(activeTemplate));
+        } else {
+          localStorage.removeItem('airiser_personal_active_template');
+        }
+
+        // Set default sync flag to false upon switching/entering rooms
+        setIsTemplateAutoSync(false);
+        safeLocalStorageSet('airiser_template_auto_sync', 'false');
+      }
+
+      setRoomState(newRoomState);
+    },
+    [roomState, config, tasks, stickyNotes, notepadContent, activeTemplate]
+  );
+
+  const handleLeaveRoom = useCallback(() => {
+    // 1. Restore previous personal template layout from localStorage or fallback to DEFAULT_WORKSPACE_CONFIG
+    try {
+      const savedSnapshot = safeLocalStorageJSONGet<{
+        config?: WorkspaceConfig;
+        tasks?: Task[];
+        stickyNotes?: StickyNote[];
+        notepad?: string;
+      } | null>('airiser_personal_workspace_snapshot', null);
+
+      if (savedSnapshot && savedSnapshot.config) {
+        setConfig(savedSnapshot.config);
+        if (savedSnapshot.tasks) setTasks(savedSnapshot.tasks);
+        if (savedSnapshot.stickyNotes) setStickyNotes(savedSnapshot.stickyNotes);
+        if (savedSnapshot.notepad !== undefined) setNotepadContent(savedSnapshot.notepad);
+      } else {
+        setConfig(DEFAULT_WORKSPACE_CONFIG);
+        setTasks(DEFAULT_TASKS);
+        setStickyNotes(DEFAULT_STICKY_NOTES);
+        setNotepadContent(DEFAULT_NOTEPAD);
+      }
+
+      const savedActiveTmpl = safeLocalStorageJSONGet<Template | null>(
+        'airiser_personal_active_template',
+        null
+      );
+      setActiveTemplate(savedActiveTmpl);
+      if (savedActiveTmpl) {
+        safeLocalStorageSet('airiser_active_template', JSON.stringify(savedActiveTmpl));
+      } else {
+        localStorage.removeItem('airiser_active_template');
+      }
+    } catch (e) {
+      console.warn('Error restoring personal workspace upon leaving room:', e);
+      setConfig(DEFAULT_WORKSPACE_CONFIG);
+      setTasks(DEFAULT_TASKS);
+      setStickyNotes(DEFAULT_STICKY_NOTES);
+      setNotepadContent(DEFAULT_NOTEPAD);
+      setActiveTemplate(null);
+    }
+
+    // 2. Set default sync flag to false
+    setIsTemplateAutoSync(false);
+    safeLocalStorageSet('airiser_template_auto_sync', 'false');
+
+    // 3. Clear room state
+    setRoomState(null);
+
+    setRollbackToast({
+      message: '✨ Restored your personal workspace layout',
+      timestamp: Date.now(),
+    });
+  }, []);
 
   // Activate & Apply Full Template (Config, Tasks, Notes, Notepad)
   const handleApplyTemplate = async (
@@ -1155,6 +1302,8 @@ export function App() {
         viewMode={viewMode}
         pendingTasksCount={tasks.filter((t) => !t.completed).length}
         canCustomize={canCustomize}
+        activeTemplate={activeTemplate}
+        activeRoomCode={roomState?.code || null}
         searchBarElement={
           <GlobalSearchBar
             config={config}
@@ -1289,6 +1438,7 @@ export function App() {
           notes={stickyNotes}
           onChangeNotes={setStickyNotes}
           canCustomize={canCustomize}
+          hideFloatingAddButton={true}
           isHighlighted={isCustomizerOpen && activeCustomizingPanel === 'notes'}
         />
       )}
@@ -1436,6 +1586,8 @@ export function App() {
         currentStickyNotes={stickyNotes}
         currentNotepad={notepadContent}
         roomParticipants={roomState?.participants || []}
+        roomId={roomState?.code || null}
+        activeRoomCode={roomState?.code || null}
         onApplyTemplate={handleApplyTemplate}
         activeTemplate={activeTemplate}
         isTemplateAutoSync={isTemplateAutoSync}
@@ -1476,7 +1628,7 @@ export function App() {
         isOpen={isRoomsOpen}
         onClose={() => setIsRoomsOpen(false)}
         roomState={roomState}
-        onRoomStateChange={setRoomState}
+        onRoomStateChange={handleRoomStateChange}
         currentTimerStatus={timerStatus}
         currentUser={user}
         currentConfig={config}
@@ -1510,7 +1662,7 @@ export function App() {
         <LiveRoomFloatingBar
           roomState={roomState}
           onOpenRoomModal={() => setIsRoomsOpen(true)}
-          onLeaveRoom={() => setRoomState(null)}
+          onLeaveRoom={handleLeaveRoom}
           onSendReaction={handleSendReaction}
         />
       )}
@@ -1588,69 +1740,87 @@ export function App() {
         </div>
       )}
 
-      {/* 13. Floating Active Template Auto-Sync Pill */}
-      {activeTemplate && (
-        <div className="fixed bottom-6 left-6 z-40 hidden sm:flex items-center gap-2.5 p-1.5 pl-3 pr-2 bg-slate-950/90 hover:bg-slate-950 border border-indigo-500/40 hover:border-indigo-500/70 rounded-2xl shadow-2xl backdrop-blur-xl text-slate-100 text-xs animate-in fade-in slide-in-from-bottom-2 duration-300 transition group">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded-xl bg-indigo-500/20 text-indigo-400">
-              <LayoutIcon className="w-3.5 h-3.5" />
-            </div>
-            <div className="min-w-0 max-w-[150px] md:max-w-[220px]">
-              <div className="font-bold text-white text-[11px] truncate flex items-center gap-1">
-                <span>{activeTemplate.name}</span>
-                {activeTemplate.isGroup === 1 && (
-                  <span className="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-semibold">
-                    Group
-                  </span>
-                )}
-              </div>
-              <div className="text-[9px] text-slate-400 flex items-center gap-1.5">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    !isTemplateAutoSync
-                      ? 'bg-slate-500'
-                      : isTemplateSyncing
-                      ? 'bg-amber-400 animate-ping'
-                      : 'bg-emerald-400'
-                  }`}
-                />
-                <span className="truncate">
-                  {!isTemplateAutoSync
-                    ? 'Auto-sync paused'
-                    : isTemplateSyncing
-                    ? 'Syncing changes...'
-                    : 'Auto-syncing to template'}
-                </span>
-              </div>
-            </div>
-          </div>
+      {/* 13. Bottom-Left Unified Dock: Sticky Note Action Button + Active Template Auto-Sync Pill */}
+      <div className="fixed bottom-6 left-6 z-40 flex items-center gap-3 pointer-events-auto select-none">
+        {/* Sticky Note Creator Button */}
+        {viewMode !== 'zen' && (config.appearance?.showStickyNotes ?? true) && (
+          <button
+            onClick={handleAddStickyNote}
+            className="group bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold p-3 rounded-full shadow-2xl transition-all duration-300 transform active:scale-95 flex items-center border border-amber-300 hover:shadow-amber-400/30 overflow-hidden shrink-0"
+            title="Add Sticky Note"
+            aria-label="Add Sticky Note"
+          >
+            <PlusIcon className="w-5 h-5 transition-transform duration-300 group-hover:rotate-90 shrink-0" />
+            <span className="max-w-0 group-hover:max-w-xs overflow-hidden opacity-0 group-hover:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap group-hover:ml-2 group-hover:mr-1">
+              Sticky Note
+            </span>
+          </button>
+        )}
 
-          <div className="flex items-center gap-1 pl-1.5 border-l border-slate-800">
-            <button
-              onClick={handleSyncActiveTemplateNow}
-              disabled={isTemplateSyncing}
-              className="p-1.5 text-slate-300 hover:text-white rounded-lg hover:bg-slate-800 transition disabled:opacity-50"
-              title="Sync current workspace to template now"
-            >
-              <RefreshCwIcon className={`w-3.5 h-3.5 ${isTemplateSyncing ? 'animate-spin text-indigo-400' : ''}`} />
-            </button>
-            <button
-              onClick={() => setIsTemplatesOpen(true)}
-              className="px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 hover:text-indigo-200 text-[10px] font-semibold rounded-lg transition"
-              title="Manage Template"
-            >
-              Manage
-            </button>
-            <button
-              onClick={handleDetachActiveTemplate}
-              className="p-1 text-slate-400 hover:text-rose-300 rounded-lg hover:bg-slate-800 transition"
-              title="Stop auto-syncing to this template (Detach)"
-            >
-              <CloseIcon className="w-3 h-3" />
-            </button>
+        {/* Floating Active Template Auto-Sync Pill */}
+        {activeTemplate && (
+          <div className="hidden sm:flex items-center gap-2.5 p-1.5 pl-3 pr-2 bg-slate-950/90 hover:bg-slate-950 border border-indigo-500/40 hover:border-indigo-500/70 rounded-2xl shadow-2xl backdrop-blur-xl text-slate-100 text-xs animate-in fade-in slide-in-from-bottom-2 duration-300 transition group shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-xl bg-indigo-500/20 text-indigo-400">
+                <LayoutIcon className="w-3.5 h-3.5" />
+              </div>
+              <div className="min-w-0 max-w-[150px] md:max-w-[220px]">
+                <div className="font-bold text-white text-[11px] truncate flex items-center gap-1">
+                  <span>{activeTemplate.name}</span>
+                  {(activeTemplate.roomId || activeTemplate.contextType === 'room' || activeTemplate.isGroup === 1) && (
+                    <span className="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[8px] font-semibold">
+                      Room
+                    </span>
+                  )}
+                </div>
+                <div className="text-[9px] text-slate-400 flex items-center gap-1.5">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      !isTemplateAutoSync
+                        ? 'bg-slate-500'
+                        : isTemplateSyncing
+                        ? 'bg-amber-400 animate-ping'
+                        : 'bg-emerald-400'
+                    }`}
+                  />
+                  <span className="truncate">
+                    {!isTemplateAutoSync
+                      ? 'Auto-sync paused'
+                      : isTemplateSyncing
+                      ? 'Syncing changes...'
+                      : 'Auto-syncing to template'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 pl-1.5 border-l border-slate-800">
+              <button
+                onClick={handleSyncActiveTemplateNow}
+                disabled={isTemplateSyncing}
+                className="p-1.5 text-slate-300 hover:text-white rounded-lg hover:bg-slate-800 transition disabled:opacity-50"
+                title="Sync current workspace to template now"
+              >
+                <RefreshCwIcon className={`w-3.5 h-3.5 ${isTemplateSyncing ? 'animate-spin text-indigo-400' : ''}`} />
+              </button>
+              <button
+                onClick={() => setIsTemplatesOpen(true)}
+                className="px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 hover:text-indigo-200 text-[10px] font-semibold rounded-lg transition"
+                title="Manage Template"
+              >
+                Manage
+              </button>
+              <button
+                onClick={handleDetachActiveTemplate}
+                className="p-1 text-slate-400 hover:text-rose-300 rounded-lg hover:bg-slate-800 transition"
+                title="Stop auto-syncing to this template (Detach)"
+              >
+                <CloseIcon className="w-3 h-3" />
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
     </div>
   );
